@@ -1,0 +1,24 @@
+{
+  "name": "deepl-translate-selection",
+  "version": "1.0.0",
+  "description": "Obsidian plugin for translating selected text with DeepL.",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "deepl",
+    "translation",
+    "plugin"
+  ],
+  "author": "Yunfeng",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.6.2",
+    "esbuild": "^0.27.4",
+    "obsidian": "^1.12.3",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "deepl-translate-selection",
+  "name": "DeepL Translate Selection",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Translate selected text with DeepL from the editor context menu. Auto-detects Chinese↔English direction.",
+  "author": "Yunfeng",
+  "authorUrl": "https://github.com/fanxin199",
+  "fundingUrl": "",
+  "isDesktopOnly": true
+}

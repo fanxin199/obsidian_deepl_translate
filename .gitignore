@@ -1,0 +1,8 @@
+# Dependencies
+node_modules/
+
+# User settings (contains API key!)
+data.json
+
+# Build artifacts that will be in releases
+# main.js is committed because Obsidian loads it directly

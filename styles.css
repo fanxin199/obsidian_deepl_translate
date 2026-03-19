@@ -1,0 +1,50 @@
+.deepl-translate-modal {
+  width: min(860px, 92vw);
+}
+
+.deepl-translate-modal .deepl-translate-modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.deepl-translate-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.deepl-translate-field-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.deepl-translate-textarea {
+  min-height: 140px;
+  resize: vertical;
+  width: 100%;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  padding: 0.85rem 0.95rem;
+  line-height: 1.5;
+}
+
+.deepl-translate-status {
+  min-height: 1.5rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.deepl-translate-status.is-error {
+  color: var(--text-error);
+}
+
+.deepl-translate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
