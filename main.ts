@@ -569,7 +569,7 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl).setName("General").setHeading();
+
 
     new Setting(containerEl)
       .setName("API key")
@@ -605,8 +605,8 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
       .setDesc("Used when the source language cannot be detected automatically.")
       .addDropdown((dropdown) => {
         dropdown
-          .addOption("ZH", "Chinese (ZH)")
-          .addOption("EN-US", "English (EN-US)")
+          .addOption("ZH", "Chinese")
+          .addOption("EN-US", "English")
           .setValue(this.plugin.settings.fallbackTargetLang)
           .onChange(async (value) => {
             this.plugin.settings.fallbackTargetLang = value as TargetLang;

@@ -429,7 +429,6 @@ var DeepLTranslateSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("General").setHeading();
     new import_obsidian.Setting(containerEl).setName("API key").setDesc("Stored in this vault's plugin data. Keys ending in :fx use the free endpoint automatically.").addText((text) => {
       text.setPlaceholder("Paste your API key");
       text.setValue(this.plugin.settings.apiKey);
@@ -450,7 +449,7 @@ var DeepLTranslateSettingTab = class extends import_obsidian.PluginSettingTab {
       });
     });
     new import_obsidian.Setting(containerEl).setName("Fallback target language").setDesc("Used when the source language cannot be detected automatically.").addDropdown((dropdown) => {
-      dropdown.addOption("ZH", "Chinese (ZH)").addOption("EN-US", "English (EN-US)").setValue(this.plugin.settings.fallbackTargetLang).onChange(async (value) => {
+      dropdown.addOption("ZH", "Chinese").addOption("EN-US", "English").setValue(this.plugin.settings.fallbackTargetLang).onChange(async (value) => {
         this.plugin.settings.fallbackTargetLang = value;
         await this.plugin.saveSettings();
       });
