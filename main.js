@@ -102,7 +102,7 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
           text
         };
         menu.addItem((item) => {
-          item.setTitle("DeepL translate").setIcon("languages").onClick(() => {
+          item.setTitle("Translate").setIcon("languages").onClick(() => {
             debugLog("Menu item clicked, text =", JSON.stringify(snapshot.text));
             void this.openTranslationModal(editor, snapshot);
           });
@@ -195,11 +195,11 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
   async openTranslationModal(editor, snapshot) {
     const resolvedSnapshot = snapshot ?? this.buildSnapshot(editor);
     if (!resolvedSnapshot) {
-      new import_obsidian.Notice("Select some text before using DeepL translate.");
+      new import_obsidian.Notice("Select some text first.");
       return;
     }
     if (!this.settings.apiKey.trim()) {
-      new import_obsidian.Notice("DeepL API key is not configured.");
+      new import_obsidian.Notice("API key is not configured.");
       this.openPluginSettings();
       return;
     }
@@ -327,7 +327,7 @@ var TranslationResultModal = class extends import_obsidian.Modal {
   }
   onOpen() {
     this.modalEl.addClass("deepl-translate-modal");
-    this.titleEl.setText("DeepL translate");
+    this.titleEl.setText("Translate");
     this.contentEl.empty();
     this.contentEl.addClass("deepl-translate-modal-content");
     debugLog("onOpen: _snap.text =", JSON.stringify(this._snap.text.slice(0, 80)));
@@ -429,9 +429,9 @@ var DeepLTranslateSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("DeepL translate selection").setHeading();
-    new import_obsidian.Setting(containerEl).setName("DeepL API key").setDesc("Stored in this vault's plugin data. Keys ending in :fx use the DeepL Free endpoint automatically.").addText((text) => {
-      text.setPlaceholder("Paste your DeepL API key");
+    new import_obsidian.Setting(containerEl).setName("General").setHeading();
+    new import_obsidian.Setting(containerEl).setName("API key").setDesc("Stored in this vault's plugin data. Keys ending in :fx use the free endpoint automatically.").addText((text) => {
+      text.setPlaceholder("Paste your API key");
       text.setValue(this.plugin.settings.apiKey);
       text.inputEl.type = "password";
       text.inputEl.addClass("deepl-setting-api-key-input");
@@ -440,7 +440,7 @@ var DeepLTranslateSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Request timeout (ms)").setDesc("How long the plugin waits for DeepL before failing the request.").addText((text) => {
+    new import_obsidian.Setting(containerEl).setName("Request timeout (ms)").setDesc("How long to wait before failing the request.").addText((text) => {
       text.setPlaceholder(String(DEFAULT_SETTINGS.requestTimeoutMs));
       text.setValue(String(this.plugin.settings.requestTimeoutMs));
       text.onChange(async (value) => {
@@ -449,14 +449,14 @@ var DeepLTranslateSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Fallback target language").setDesc("Used when the selection is neither clearly Chinese nor English.").addDropdown((dropdown) => {
-      dropdown.addOption("ZH", "ZH").addOption("EN-US", "EN-US").setValue(this.plugin.settings.fallbackTargetLang).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Fallback target language").setDesc("Used when the source language cannot be detected automatically.").addDropdown((dropdown) => {
+      dropdown.addOption("ZH", "Chinese (ZH)").addOption("EN-US", "English (EN-US)").setValue(this.plugin.settings.fallbackTargetLang).onChange(async (value) => {
         this.plugin.settings.fallbackTargetLang = value;
         await this.plugin.saveSettings();
       });
     });
     new import_obsidian.Setting(containerEl).setName("Model type").setDesc("Pinned to quality_optimized for v1.").addDropdown((dropdown) => {
-      dropdown.addOption("quality_optimized", "quality_optimized").setValue(this.plugin.settings.modelType).onChange(async (value) => {
+      dropdown.addOption("quality_optimized", "Quality optimized").setValue(this.plugin.settings.modelType).onChange(async (value) => {
         this.plugin.settings.modelType = value;
         await this.plugin.saveSettings();
       });

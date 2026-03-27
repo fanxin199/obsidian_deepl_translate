@@ -152,7 +152,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
 
         menu.addItem((item) => {
           item
-            .setTitle("DeepL translate")
+            .setTitle("Translate")
             .setIcon("languages")
             .onClick(() => {
               debugLog("Menu item clicked, text =", JSON.stringify(snapshot.text));
@@ -268,12 +268,12 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
   async openTranslationModal(editor: Editor, snapshot?: SelectionSnapshot): Promise<void> {
     const resolvedSnapshot = snapshot ?? this.buildSnapshot(editor);
     if (!resolvedSnapshot) {
-      new Notice("Select some text before using DeepL translate.");
+      new Notice("Select some text first.");
       return;
     }
 
     if (!this.settings.apiKey.trim()) {
-      new Notice("DeepL API key is not configured.");
+      new Notice("API key is not configured.");
       this.openPluginSettings();
       return;
     }
@@ -447,7 +447,7 @@ class TranslationResultModal extends Modal {
 
   onOpen(): void {
     this.modalEl.addClass("deepl-translate-modal");
-    this.titleEl.setText("DeepL translate");
+    this.titleEl.setText("Translate");
     this.contentEl.empty();
     this.contentEl.addClass("deepl-translate-modal-content");
 
@@ -569,13 +569,13 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl).setName("DeepL translate selection").setHeading();
+    new Setting(containerEl).setName("General").setHeading();
 
     new Setting(containerEl)
-      .setName("DeepL API key")
-      .setDesc("Stored in this vault's plugin data. Keys ending in :fx use the DeepL Free endpoint automatically.")
+      .setName("API key")
+      .setDesc("Stored in this vault's plugin data. Keys ending in :fx use the free endpoint automatically.")
       .addText((text) => {
-        text.setPlaceholder("Paste your DeepL API key");
+        text.setPlaceholder("Paste your API key");
         text.setValue(this.plugin.settings.apiKey);
         text.inputEl.type = "password";
         text.inputEl.addClass("deepl-setting-api-key-input");
@@ -587,7 +587,7 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Request timeout (ms)")
-      .setDesc("How long the plugin waits for DeepL before failing the request.")
+      .setDesc("How long to wait before failing the request.")
       .addText((text) => {
         text.setPlaceholder(String(DEFAULT_SETTINGS.requestTimeoutMs));
         text.setValue(String(this.plugin.settings.requestTimeoutMs));
@@ -602,11 +602,11 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Fallback target language")
-      .setDesc("Used when the selection is neither clearly Chinese nor English.")
+      .setDesc("Used when the source language cannot be detected automatically.")
       .addDropdown((dropdown) => {
         dropdown
-          .addOption("ZH", "ZH")
-          .addOption("EN-US", "EN-US")
+          .addOption("ZH", "Chinese (ZH)")
+          .addOption("EN-US", "English (EN-US)")
           .setValue(this.plugin.settings.fallbackTargetLang)
           .onChange(async (value) => {
             this.plugin.settings.fallbackTargetLang = value as TargetLang;
@@ -619,7 +619,7 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
       .setDesc("Pinned to quality_optimized for v1.")
       .addDropdown((dropdown) => {
         dropdown
-          .addOption("quality_optimized", "quality_optimized")
+          .addOption("quality_optimized", "Quality optimized")
           .setValue(this.plugin.settings.modelType)
           .onChange(async (value) => {
             this.plugin.settings.modelType = value as ModelType;
