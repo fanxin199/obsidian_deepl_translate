@@ -51,7 +51,7 @@ const BUILD_ID = "v2-20260319-1540";
 
 function debugLog(...args: unknown[]): void {
   if (DEBUG) {
-    console.log(`[DeepL Translate ${BUILD_ID}]`, ...args);
+    console.debug(`[DeepL Translate ${BUILD_ID}]`, ...args);
   }
 }
 
@@ -110,8 +110,8 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
 
     // ── Command palette / hotkey ────────────────────────────────
     this.addCommand({
-      id: "deepl-translate-selection",
-      name: "DeepL: Translate Selection",
+      id: "translate-selection",
+      name: "Translate selection",
       editorCallback: (editor: Editor) => {
         debugLog("editorCallback triggered");
         void this.openTranslationModal(editor);
@@ -152,7 +152,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
 
         menu.addItem((item) => {
           item
-            .setTitle("DeepL Translate")
+            .setTitle("DeepL translate")
             .setIcon("languages")
             .onClick(() => {
               debugLog("Menu item clicked, text =", JSON.stringify(snapshot.text));
@@ -268,7 +268,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
   async openTranslationModal(editor: Editor, snapshot?: SelectionSnapshot): Promise<void> {
     const resolvedSnapshot = snapshot ?? this.buildSnapshot(editor);
     if (!resolvedSnapshot) {
-      new Notice("Select some text before using DeepL Translate.");
+      new Notice("Select some text before using DeepL translate.");
       return;
     }
 
@@ -447,7 +447,7 @@ class TranslationResultModal extends Modal {
 
   onOpen(): void {
     this.modalEl.addClass("deepl-translate-modal");
-    this.titleEl.setText("DeepL Translate");
+    this.titleEl.setText("DeepL translate");
     this.contentEl.empty();
     this.contentEl.addClass("deepl-translate-modal-content");
 
@@ -463,7 +463,7 @@ class TranslationResultModal extends Modal {
     const actions = this.contentEl.createDiv({ cls: "deepl-translate-actions" });
 
     this.insertButton = actions.createEl("button", {
-      text: "Insert Below",
+      text: "Insert below",
       cls: "mod-cta",
     });
     this.insertButton.disabled = true;
@@ -472,7 +472,7 @@ class TranslationResultModal extends Modal {
     });
 
     this.replaceButton = actions.createEl("button", {
-      text: "Replace Selection",
+      text: "Replace selection",
     });
     this.replaceButton.disabled = true;
     this.replaceButton.addEventListener("click", () => {
@@ -550,23 +550,7 @@ class TranslationResultModal extends Modal {
       await navigator.clipboard.writeText(this.translatedText);
       new Notice("Translation copied to clipboard.");
     } catch {
-      const fallback = document.createElement("textarea");
-      fallback.value = this.translatedText;
-      fallback.setAttribute("readonly", "readonly");
-      fallback.style.position = "fixed";
-      fallback.style.opacity = "0";
-      document.body.appendChild(fallback);
-      fallback.select();
-
-      const copied = document.execCommand("copy");
-      document.body.removeChild(fallback);
-
-      if (!copied) {
-        new Notice("Could not copy the translation to the clipboard.");
-        return;
-      }
-
-      new Notice("Translation copied to clipboard.");
+      new Notice("Could not copy the translation to the clipboard.");
     }
   }
 }
@@ -585,7 +569,7 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "DeepL Translate Selection" });
+    new Setting(containerEl).setName("DeepL translate selection").setHeading();
 
     new Setting(containerEl)
       .setName("DeepL API key")
@@ -594,7 +578,7 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
         text.setPlaceholder("Paste your DeepL API key");
         text.setValue(this.plugin.settings.apiKey);
         text.inputEl.type = "password";
-        text.inputEl.style.width = "100%";
+        text.inputEl.addClass("deepl-setting-api-key-input");
         text.onChange(async (value) => {
           this.plugin.settings.apiKey = value.trim();
           await this.plugin.saveSettings();

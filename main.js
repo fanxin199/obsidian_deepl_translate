@@ -34,7 +34,7 @@ var DEBUG = false;
 var BUILD_ID = "v2-20260319-1540";
 function debugLog(...args) {
   if (DEBUG) {
-    console.log(`[DeepL Translate ${BUILD_ID}]`, ...args);
+    console.debug(`[DeepL Translate ${BUILD_ID}]`, ...args);
   }
 }
 var DeepLError = class extends Error {
@@ -72,8 +72,8 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     await this.loadSettings();
     this.addSettingTab(new DeepLTranslateSettingTab(this.app, this));
     this.addCommand({
-      id: "deepl-translate-selection",
-      name: "DeepL: Translate Selection",
+      id: "translate-selection",
+      name: "Translate selection",
       editorCallback: (editor) => {
         debugLog("editorCallback triggered");
         void this.openTranslationModal(editor);
@@ -102,7 +102,7 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
           text
         };
         menu.addItem((item) => {
-          item.setTitle("DeepL Translate").setIcon("languages").onClick(() => {
+          item.setTitle("DeepL translate").setIcon("languages").onClick(() => {
             debugLog("Menu item clicked, text =", JSON.stringify(snapshot.text));
             void this.openTranslationModal(editor, snapshot);
           });
@@ -195,7 +195,7 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
   async openTranslationModal(editor, snapshot) {
     const resolvedSnapshot = snapshot ?? this.buildSnapshot(editor);
     if (!resolvedSnapshot) {
-      new import_obsidian.Notice("Select some text before using DeepL Translate.");
+      new import_obsidian.Notice("Select some text before using DeepL translate.");
       return;
     }
     if (!this.settings.apiKey.trim()) {
@@ -327,7 +327,7 @@ var TranslationResultModal = class extends import_obsidian.Modal {
   }
   onOpen() {
     this.modalEl.addClass("deepl-translate-modal");
-    this.titleEl.setText("DeepL Translate");
+    this.titleEl.setText("DeepL translate");
     this.contentEl.empty();
     this.contentEl.addClass("deepl-translate-modal-content");
     debugLog("onOpen: _snap.text =", JSON.stringify(this._snap.text.slice(0, 80)));
@@ -339,7 +339,7 @@ var TranslationResultModal = class extends import_obsidian.Modal {
     });
     const actions = this.contentEl.createDiv({ cls: "deepl-translate-actions" });
     this.insertButton = actions.createEl("button", {
-      text: "Insert Below",
+      text: "Insert below",
       cls: "mod-cta"
     });
     this.insertButton.disabled = true;
@@ -347,7 +347,7 @@ var TranslationResultModal = class extends import_obsidian.Modal {
       this.insertBelow();
     });
     this.replaceButton = actions.createEl("button", {
-      text: "Replace Selection"
+      text: "Replace selection"
     });
     this.replaceButton.disabled = true;
     this.replaceButton.addEventListener("click", () => {
@@ -417,20 +417,7 @@ ${this.translatedText}`;
       await navigator.clipboard.writeText(this.translatedText);
       new import_obsidian.Notice("Translation copied to clipboard.");
     } catch {
-      const fallback = document.createElement("textarea");
-      fallback.value = this.translatedText;
-      fallback.setAttribute("readonly", "readonly");
-      fallback.style.position = "fixed";
-      fallback.style.opacity = "0";
-      document.body.appendChild(fallback);
-      fallback.select();
-      const copied = document.execCommand("copy");
-      document.body.removeChild(fallback);
-      if (!copied) {
-        new import_obsidian.Notice("Could not copy the translation to the clipboard.");
-        return;
-      }
-      new import_obsidian.Notice("Translation copied to clipboard.");
+      new import_obsidian.Notice("Could not copy the translation to the clipboard.");
     }
   }
 };
@@ -442,12 +429,12 @@ var DeepLTranslateSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "DeepL Translate Selection" });
+    new import_obsidian.Setting(containerEl).setName("DeepL translate selection").setHeading();
     new import_obsidian.Setting(containerEl).setName("DeepL API key").setDesc("Stored in this vault's plugin data. Keys ending in :fx use the DeepL Free endpoint automatically.").addText((text) => {
       text.setPlaceholder("Paste your DeepL API key");
       text.setValue(this.plugin.settings.apiKey);
       text.inputEl.type = "password";
-      text.inputEl.style.width = "100%";
+      text.inputEl.addClass("deepl-setting-api-key-input");
       text.onChange(async (value) => {
         this.plugin.settings.apiKey = value.trim();
         await this.plugin.saveSettings();
