@@ -1,6 +1,6 @@
 {
   "name": "deepl-translate-selection",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Obsidian plugin for translating selected text with DeepL.",
   "main": "main.js",
   "scripts": {
