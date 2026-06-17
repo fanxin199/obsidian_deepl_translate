@@ -347,6 +347,7 @@ ${text}`
       stream: false
     };
     try {
+      const timeoutMs = Math.max(this.settings.requestTimeoutMs, 6e4);
       const response = await this.withTimeout(
         (0, import_obsidian.requestUrl)({
           url: endpoint,
@@ -358,7 +359,7 @@ ${text}`
           body: JSON.stringify(requestBody),
           throw: false
         }),
-        this.settings.requestTimeoutMs
+        timeoutMs
       );
       if (response.status >= 400) {
         throw new DeepLError(this.getLLMErrorMessage(response), response.status);
@@ -402,6 +403,10 @@ ${text}`
   }
   getLLMErrorMessage(response) {
     const payload = response.json;
+    const apiMessage = payload?.error?.message;
+    if (apiMessage) {
+      return apiMessage;
+    }
     if (response.status === 401 || response.status === 403) {
       return "LLM API rejected the API key. Check the key in plugin settings.";
     }
@@ -411,7 +416,7 @@ ${text}`
     if (response.status >= 500) {
       return "LLM API is temporarily unavailable. Try again later.";
     }
-    return payload?.error?.message ?? response.text ?? `LLM request failed with status ${response.status}.`;
+    return response.text ?? `LLM request failed with status ${response.status}.`;
   }
   async withTimeout(promise, timeoutMs) {
     let timeoutId;

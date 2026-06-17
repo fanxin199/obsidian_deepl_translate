@@ -482,6 +482,8 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
     };
 
     try {
+      // LLMs are slower and prone to congestion; use a minimum of 60 seconds
+      const timeoutMs = Math.max(this.settings.requestTimeoutMs, 60000);
       const response = await this.withTimeout(
         requestUrl({
           url: endpoint,
@@ -493,7 +495,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
           body: JSON.stringify(requestBody),
           throw: false,
         }),
-        this.settings.requestTimeoutMs,
+        timeoutMs,
       );
 
       if (response.status >= 400) {
@@ -548,6 +550,13 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
 
   private getLLMErrorMessage(response: RequestUrlResponse): string {
     const payload = response.json as DeepSeekChatResponse | undefined;
+    
+    // Prioritize specific error message from the API payload if available
+    const apiMessage = payload?.error?.message;
+    if (apiMessage) {
+      return apiMessage;
+    }
+
     if (response.status === 401 || response.status === 403) {
       return "LLM API rejected the API key. Check the key in plugin settings.";
     }
@@ -560,7 +569,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
       return "LLM API is temporarily unavailable. Try again later.";
     }
 
-    return payload?.error?.message ?? response.text ?? `LLM request failed with status ${response.status}.`;
+    return response.text ?? `LLM request failed with status ${response.status}.`;
   }
 
   private async withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
