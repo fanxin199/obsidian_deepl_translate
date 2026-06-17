@@ -1,25 +1,30 @@
 # Privacy and network access
 
-DeepL Translate Selection translates text by sending the selected text to the DeepL API only when the user explicitly runs a translation command.
+This plugin translates text by sending the selected text to a third-party translation API only when the user explicitly runs a translation command.
 
-## Data sent to DeepL
+## Translation providers
+
+The plugin supports two translation providers. Only the currently selected provider receives data.
+
+### DeepL
 
 - The selected text is sent to DeepL for translation.
 - The configured DeepL API key is sent only to DeepL translation endpoints for authentication.
+- Free-tier API keys (ending in `:fx`) are routed to the DeepL Free API endpoint; Pro keys are routed to the DeepL Pro API endpoint.
+
+### DeepSeek / OpenAI-compatible LLM
+
+- The selected text is sent to the configured LLM API endpoint for translation.
+- A system prompt is included with each request to instruct the model to act as a translator.
+- The configured API key is sent only to the configured API endpoint for authentication.
+- The default endpoint is `https://api.deepseek.com`. Users may configure a custom base URL to use other OpenAI-compatible services.
+
+## Common
+
 - The plugin does not run background translation, indexing, analytics, telemetry, or tracking.
+- API keys are stored locally in Obsidian plugin settings. They are not uploaded to the plugin author or to any service other than the configured API endpoints during translation requests.
+- The plugin writes translated text to the clipboard only when the user chooses the Copy action.
 
-## API key storage
+## Third-party services
 
-The DeepL API key is stored locally in Obsidian plugin settings. It is not uploaded to the plugin author or to any service other than DeepL API endpoints during translation requests.
-
-## Clipboard access
-
-The plugin writes translated text to the clipboard only when the user chooses the Copy action.
-
-## Third-party service
-
-DeepL is a third-party translation service. Use of this plugin may require a DeepL Free or Pro API account and is subject to DeepL's terms, privacy policy, and usage limits.
-
-## Network access
-
-The plugin connects to DeepL API endpoints to perform translations. Free-tier API keys are routed to the DeepL Free API endpoint, and Pro keys are routed to the DeepL Pro API endpoint.
+DeepL and DeepSeek are third-party services. Use of this plugin may require API accounts and is subject to each service's terms, privacy policy, and usage limits.

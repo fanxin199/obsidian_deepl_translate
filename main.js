@@ -25,13 +25,33 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var DEFAULT_SETTINGS = {
+  translationProvider: "deepl",
   apiKey: "",
   requestTimeoutMs: 15e3,
   fallbackTargetLang: "ZH",
-  modelType: "quality_optimized"
+  modelType: "quality_optimized",
+  deepseekApiKey: "",
+  deepseekModel: "deepseek-v4-flash",
+  deepseekTemperature: 0.3,
+  deepseekBaseUrl: "https://api.deepseek.com",
+  deepseekCustomSystemPrompt: ""
 };
+var DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaking {{targetLang}} translator.
+
+## Rules
+1. Output ONLY the translated text. No explanations, notes, preamble, or meta-commentary.
+2. Preserve the original paragraph structure, line breaks, and formatting exactly.
+3. Keep the following UNTRANSLATED:
+   - Code blocks (\`\`\` ... \`\`\`) and inline code (\` ... \`)
+   - LaTeX formulas ($...$, $$...$$)
+   - Obsidian wikilinks ([[...]])
+   - URLs, file paths, proper nouns, brand names
+   - YAML frontmatter
+4. Translate naturally and fluently, not word-by-word. Use idiomatic expressions appropriate for the target language.
+5. For academic or technical content, use standard terminology in the target field.
+6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
 var DEBUG = false;
-var BUILD_ID = "v2-20260319-1540";
+var BUILD_ID = "v3-20260617-1100";
 function debugLog(...args) {
   if (DEBUG) {
     console.debug(`[DeepL Translate ${BUILD_ID}]`, ...args);
@@ -198,7 +218,8 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
       new import_obsidian.Notice("Select some text first.");
       return;
     }
-    if (!this.settings.apiKey.trim()) {
+    const activeApiKey = this.settings.translationProvider === "deepl" ? this.settings.apiKey.trim() : this.settings.deepseekApiKey.trim();
+    if (!activeApiKey) {
       new import_obsidian.Notice("API key is not configured.");
       this.openPluginSettings();
       return;
@@ -246,7 +267,27 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     }
     return this.settings.fallbackTargetLang;
   }
+  getTargetLanguageLabel(targetLang) {
+    switch (targetLang) {
+      case "ZH":
+        return "Chinese";
+      case "EN-US":
+        return "English";
+      default:
+        return "Chinese";
+    }
+  }
+  getProviderLabel() {
+    return this.settings.translationProvider === "deepl" ? "DeepL" : "LLM";
+  }
   async translateText(text) {
+    if (this.settings.translationProvider === "deepseek") {
+      return this.translateWithDeepSeek(text);
+    }
+    return this.translateWithDeepL(text);
+  }
+  // ── DeepL translation ─────────────────────────────────────────
+  async translateWithDeepL(text) {
     const apiKey = this.settings.apiKey.trim();
     const endpoint = apiKey.endsWith(":fx") ? "https://api-free.deepl.com/v2/translate" : "https://api.deepl.com/v2/translate";
     const params = new URLSearchParams();
@@ -268,7 +309,7 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
         this.settings.requestTimeoutMs
       );
       if (response.status >= 400) {
-        throw new DeepLError(this.getErrorMessage(response), response.status);
+        throw new DeepLError(this.getDeepLErrorMessage(response), response.status);
       }
       const payload = response.json;
       const translation = payload.translations?.[0]?.text;
@@ -283,7 +324,70 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
       throw new DeepLError("DeepL request failed. Check your network connection and try again.");
     }
   }
-  getErrorMessage(response) {
+  // ── DeepSeek / OpenAI-compatible translation ──────────────────
+  async translateWithDeepSeek(text) {
+    const apiKey = this.settings.deepseekApiKey.trim();
+    const baseUrl = this.settings.deepseekBaseUrl.replace(/\/+$/, "");
+    const endpoint = `${baseUrl}/chat/completions`;
+    const targetLang = this.getTargetLanguage(text);
+    const targetLangLabel = this.getTargetLanguageLabel(targetLang);
+    const systemPrompt = this.buildTranslationSystemPrompt(targetLangLabel);
+    const requestBody = {
+      model: this.settings.deepseekModel,
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: `Translate the following text to ${targetLangLabel}:
+
+${text}`
+        }
+      ],
+      temperature: this.settings.deepseekTemperature,
+      stream: false
+    };
+    try {
+      const response = await this.withTimeout(
+        (0, import_obsidian.requestUrl)({
+          url: endpoint,
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(requestBody),
+          throw: false
+        }),
+        this.settings.requestTimeoutMs
+      );
+      if (response.status >= 400) {
+        throw new DeepLError(this.getLLMErrorMessage(response), response.status);
+      }
+      const payload = response.json;
+      const translation = payload.choices?.[0]?.message?.content?.trim();
+      if (!translation) {
+        throw new DeepLError("LLM returned an empty translation.");
+      }
+      return translation;
+    } catch (error) {
+      if (error instanceof DeepLError) {
+        throw error;
+      }
+      throw new DeepLError("LLM request failed. Check your network connection and try again.");
+    }
+  }
+  buildTranslationSystemPrompt(targetLangLabel) {
+    const customPrompt = this.settings.deepseekCustomSystemPrompt.trim();
+    if (customPrompt) {
+      return customPrompt.replace(/\{\{targetLang\}\}/g, targetLangLabel);
+    }
+    return DEFAULT_TRANSLATION_SYSTEM_PROMPT.replace(
+      /\{\{targetLang\}\}/g,
+      targetLangLabel
+    );
+  }
+  // ── Error helpers ─────────────────────────────────────────────
+  getDeepLErrorMessage(response) {
     const payload = response.json;
     if (response.status === 401 || response.status === 403) {
       return "DeepL rejected the API key. Check the key in plugin settings.";
@@ -296,11 +400,24 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     }
     return payload?.message ?? payload?.detail ?? response.text ?? `DeepL request failed with status ${response.status}.`;
   }
+  getLLMErrorMessage(response) {
+    const payload = response.json;
+    if (response.status === 401 || response.status === 403) {
+      return "LLM API rejected the API key. Check the key in plugin settings.";
+    }
+    if (response.status === 429) {
+      return "LLM API rate limit reached. Wait a moment and try again.";
+    }
+    if (response.status >= 500) {
+      return "LLM API is temporarily unavailable. Try again later.";
+    }
+    return payload?.error?.message ?? response.text ?? `LLM request failed with status ${response.status}.`;
+  }
   async withTimeout(promise, timeoutMs) {
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
       timeoutId = window.setTimeout(() => {
-        reject(new DeepLError("DeepL request timed out."));
+        reject(new DeepLError("Translation request timed out."));
       }, timeoutMs);
     });
     try {
@@ -331,11 +448,12 @@ var TranslationResultModal = class extends import_obsidian.Modal {
     this.contentEl.empty();
     this.contentEl.addClass("deepl-translate-modal-content");
     debugLog("onOpen: _snap.text =", JSON.stringify(this._snap.text.slice(0, 80)));
+    const providerLabel = this.plugin.getProviderLabel();
     this.sourceTextArea = this.createTextAreaField("Original text", this._snap.text);
     this.translationTextArea = this.createTextAreaField("Translated text", "Translating...");
     this.statusEl = this.contentEl.createDiv({
       cls: "deepl-translate-status",
-      text: "Sending text to DeepL..."
+      text: `Sending text to ${providerLabel}...`
     });
     const actions = this.contentEl.createDiv({ cls: "deepl-translate-actions" });
     this.insertButton = actions.createEl("button", {
@@ -367,7 +485,8 @@ var TranslationResultModal = class extends import_obsidian.Modal {
   }
   async translate() {
     try {
-      debugLog("translate(): sending to DeepL:", JSON.stringify(this._snap.text.slice(0, 100)));
+      const providerLabel = this.plugin.getProviderLabel();
+      debugLog(`translate(): sending to ${providerLabel}:`, JSON.stringify(this._snap.text.slice(0, 100)));
       const translatedText = await this.plugin.translateText(this._snap.text);
       this.translatedText = translatedText;
       this.translationTextArea.value = translatedText;
@@ -429,8 +548,19 @@ var DeepLTranslateSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("API key").setDesc("Stored in this vault's plugin data. Keys ending in :fx use the free endpoint automatically.").addText((text) => {
-      text.setPlaceholder("Paste your API key");
+    new import_obsidian.Setting(containerEl).setName("Translation provider").setDesc("Choose the translation engine to use.").addDropdown((dropdown) => {
+      dropdown.addOption("deepl", "DeepL").addOption("deepseek", "DeepSeek / OpenAI compatible").setValue(this.plugin.settings.translationProvider).onChange(async (value) => {
+        this.plugin.settings.translationProvider = value;
+        await this.plugin.saveSettings();
+        this.toggleProviderSections();
+      });
+    });
+    this.deeplSection = containerEl.createDiv({ cls: "deepl-translate-provider-section" });
+    new import_obsidian.Setting(this.deeplSection).setName("DeepL").setHeading();
+    new import_obsidian.Setting(this.deeplSection).setName("API key").setDesc(
+      "Stored in this vault's plugin data. Keys ending in :fx use the free endpoint automatically."
+    ).addText((text) => {
+      text.setPlaceholder("Paste your DeepL API key");
       text.setValue(this.plugin.settings.apiKey);
       text.inputEl.type = "password";
       text.inputEl.addClass("deepl-setting-api-key-input");
@@ -439,6 +569,63 @@ var DeepLTranslateSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
+    new import_obsidian.Setting(this.deeplSection).setName("Model type").setDesc("Pinned to quality_optimized for v1.").addDropdown((dropdown) => {
+      dropdown.addOption("quality_optimized", "Quality optimized").setValue(this.plugin.settings.modelType).onChange(async (value) => {
+        this.plugin.settings.modelType = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    this.deepseekSection = containerEl.createDiv({ cls: "deepl-translate-provider-section" });
+    new import_obsidian.Setting(this.deepseekSection).setName("DeepSeek / OpenAI compatible").setHeading();
+    new import_obsidian.Setting(this.deepseekSection).setName("API key").setDesc("Your DeepSeek or OpenAI-compatible API key.").addText((text) => {
+      text.setPlaceholder("Paste your API key");
+      text.setValue(this.plugin.settings.deepseekApiKey);
+      text.inputEl.type = "password";
+      text.inputEl.addClass("deepl-setting-api-key-input");
+      text.onChange(async (value) => {
+        this.plugin.settings.deepseekApiKey = value.trim();
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian.Setting(this.deepseekSection).setName("Model").setDesc("Model identifier (e.g. deepseek-v4-flash, gpt-4o).").addText((text) => {
+      text.setPlaceholder(DEFAULT_SETTINGS.deepseekModel);
+      text.setValue(this.plugin.settings.deepseekModel);
+      text.onChange(async (value) => {
+        this.plugin.settings.deepseekModel = value.trim() || DEFAULT_SETTINGS.deepseekModel;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian.Setting(this.deepseekSection).setName("Temperature").setDesc(
+      "Lower values produce more consistent translations (0.0\u20132.0). Recommended: 0.3."
+    ).addText((text) => {
+      text.setPlaceholder(String(DEFAULT_SETTINGS.deepseekTemperature));
+      text.setValue(String(this.plugin.settings.deepseekTemperature));
+      text.onChange(async (value) => {
+        const parsed = Number.parseFloat(value);
+        this.plugin.settings.deepseekTemperature = Number.isFinite(parsed) && parsed >= 0 && parsed <= 2 ? parsed : DEFAULT_SETTINGS.deepseekTemperature;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian.Setting(this.deepseekSection).setName("API base URL").setDesc("DeepSeek or any OpenAI-compatible endpoint.").addText((text) => {
+      text.setPlaceholder(DEFAULT_SETTINGS.deepseekBaseUrl);
+      text.setValue(this.plugin.settings.deepseekBaseUrl);
+      text.onChange(async (value) => {
+        this.plugin.settings.deepseekBaseUrl = value.trim() || DEFAULT_SETTINGS.deepseekBaseUrl;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian.Setting(this.deepseekSection).setName("Custom system prompt").setDesc(
+      "Override the built-in translation prompt. Use {{targetLang}} as a placeholder for the target language. Leave empty to use the default."
+    ).addTextArea((textArea) => {
+      textArea.setPlaceholder("Leave empty to use the built-in prompt");
+      textArea.setValue(this.plugin.settings.deepseekCustomSystemPrompt);
+      textArea.inputEl.addClass("deepl-translate-system-prompt-textarea");
+      textArea.onChange(async (value) => {
+        this.plugin.settings.deepseekCustomSystemPrompt = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Common").setHeading();
     new import_obsidian.Setting(containerEl).setName("Request timeout (ms)").setDesc("How long to wait before failing the request.").addText((text) => {
       text.setPlaceholder(String(DEFAULT_SETTINGS.requestTimeoutMs));
       text.setValue(String(this.plugin.settings.requestTimeoutMs));
@@ -454,11 +641,11 @@ var DeepLTranslateSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Model type").setDesc("Pinned to quality_optimized for v1.").addDropdown((dropdown) => {
-      dropdown.addOption("quality_optimized", "Quality optimized").setValue(this.plugin.settings.modelType).onChange(async (value) => {
-        this.plugin.settings.modelType = value;
-        await this.plugin.saveSettings();
-      });
-    });
+    this.toggleProviderSections();
+  }
+  toggleProviderSections() {
+    const isDeepL = this.plugin.settings.translationProvider === "deepl";
+    this.deeplSection.style.display = isDeepL ? "block" : "none";
+    this.deepseekSection.style.display = isDeepL ? "none" : "block";
   }
 };

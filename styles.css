@@ -52,3 +52,16 @@
 .deepl-setting-api-key-input {
   width: 100%;
 }
+
+.deepl-translate-provider-section {
+  margin-bottom: 0.5rem;
+}
+
+.deepl-translate-system-prompt-textarea {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  font-family: var(--font-monospace);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}

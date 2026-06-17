@@ -14,12 +14,24 @@ import {
 
 type TargetLang = "ZH" | "EN-US";
 type ModelType = "quality_optimized";
+type TranslationProvider = "deepl" | "deepseek";
 
 interface DeepLTranslateSettings {
-  apiKey: string;
+  // General
+  translationProvider: TranslationProvider;
   requestTimeoutMs: number;
   fallbackTargetLang: TargetLang;
+
+  // DeepL
+  apiKey: string;
   modelType: ModelType;
+
+  // DeepSeek / OpenAI-compatible
+  deepseekApiKey: string;
+  deepseekModel: string;
+  deepseekTemperature: number;
+  deepseekBaseUrl: string;
+  deepseekCustomSystemPrompt: string;
 }
 
 interface TranslateResponse {
@@ -32,6 +44,18 @@ interface TranslateResponse {
   detail?: string;
 }
 
+interface DeepSeekChatResponse {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+  error?: {
+    message?: string;
+    type?: string;
+  };
+}
+
 interface SelectionSnapshot {
   editor: Editor;
   from: EditorPosition;
@@ -40,14 +64,35 @@ interface SelectionSnapshot {
 }
 
 const DEFAULT_SETTINGS: DeepLTranslateSettings = {
+  translationProvider: "deepl",
   apiKey: "",
   requestTimeoutMs: 15000,
   fallbackTargetLang: "ZH",
   modelType: "quality_optimized",
+  deepseekApiKey: "",
+  deepseekModel: "deepseek-v4-flash",
+  deepseekTemperature: 0.3,
+  deepseekBaseUrl: "https://api.deepseek.com",
+  deepseekCustomSystemPrompt: "",
 };
 
+const DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaking {{targetLang}} translator.
+
+## Rules
+1. Output ONLY the translated text. No explanations, notes, preamble, or meta-commentary.
+2. Preserve the original paragraph structure, line breaks, and formatting exactly.
+3. Keep the following UNTRANSLATED:
+   - Code blocks (\`\`\` ... \`\`\`) and inline code (\` ... \`)
+   - LaTeX formulas ($...$, $$...$$)
+   - Obsidian wikilinks ([[...]])
+   - URLs, file paths, proper nouns, brand names
+   - YAML frontmatter
+4. Translate naturally and fluently, not word-by-word. Use idiomatic expressions appropriate for the target language.
+5. For academic or technical content, use standard terminology in the target field.
+6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
+
 const DEBUG = false;
-const BUILD_ID = "v2-20260319-1540";
+const BUILD_ID = "v3-20260617-1100";
 
 function debugLog(...args: unknown[]): void {
   if (DEBUG) {
@@ -272,7 +317,11 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
       return;
     }
 
-    if (!this.settings.apiKey.trim()) {
+    const activeApiKey = this.settings.translationProvider === "deepl"
+      ? this.settings.apiKey.trim()
+      : this.settings.deepseekApiKey.trim();
+
+    if (!activeApiKey) {
       new Notice("API key is not configured.");
       this.openPluginSettings();
       return;
@@ -339,7 +388,31 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
     return this.settings.fallbackTargetLang;
   }
 
+  private getTargetLanguageLabel(targetLang: TargetLang): string {
+    switch (targetLang) {
+      case "ZH":
+        return "Chinese";
+      case "EN-US":
+        return "English";
+      default:
+        return "Chinese";
+    }
+  }
+
+  getProviderLabel(): string {
+    return this.settings.translationProvider === "deepl" ? "DeepL" : "LLM";
+  }
+
   async translateText(text: string): Promise<string> {
+    if (this.settings.translationProvider === "deepseek") {
+      return this.translateWithDeepSeek(text);
+    }
+    return this.translateWithDeepL(text);
+  }
+
+  // ── DeepL translation ─────────────────────────────────────────
+
+  private async translateWithDeepL(text: string): Promise<string> {
     const apiKey = this.settings.apiKey.trim();
     const endpoint = apiKey.endsWith(":fx")
       ? "https://api-free.deepl.com/v2/translate"
@@ -365,7 +438,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
       );
 
       if (response.status >= 400) {
-        throw new DeepLError(this.getErrorMessage(response), response.status);
+        throw new DeepLError(this.getDeepLErrorMessage(response), response.status);
       }
 
       const payload = response.json as TranslateResponse;
@@ -384,7 +457,79 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
     }
   }
 
-  private getErrorMessage(response: RequestUrlResponse): string {
+  // ── DeepSeek / OpenAI-compatible translation ──────────────────
+
+  private async translateWithDeepSeek(text: string): Promise<string> {
+    const apiKey = this.settings.deepseekApiKey.trim();
+    const baseUrl = this.settings.deepseekBaseUrl.replace(/\/+$/, "");
+    const endpoint = `${baseUrl}/chat/completions`;
+
+    const targetLang = this.getTargetLanguage(text);
+    const targetLangLabel = this.getTargetLanguageLabel(targetLang);
+    const systemPrompt = this.buildTranslationSystemPrompt(targetLangLabel);
+
+    const requestBody = {
+      model: this.settings.deepseekModel,
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: `Translate the following text to ${targetLangLabel}:\n\n${text}`,
+        },
+      ],
+      temperature: this.settings.deepseekTemperature,
+      stream: false,
+    };
+
+    try {
+      const response = await this.withTimeout(
+        requestUrl({
+          url: endpoint,
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+          throw: false,
+        }),
+        this.settings.requestTimeoutMs,
+      );
+
+      if (response.status >= 400) {
+        throw new DeepLError(this.getLLMErrorMessage(response), response.status);
+      }
+
+      const payload = response.json as DeepSeekChatResponse;
+      const translation = payload.choices?.[0]?.message?.content?.trim();
+      if (!translation) {
+        throw new DeepLError("LLM returned an empty translation.");
+      }
+
+      return translation;
+    } catch (error) {
+      if (error instanceof DeepLError) {
+        throw error;
+      }
+
+      throw new DeepLError("LLM request failed. Check your network connection and try again.");
+    }
+  }
+
+  private buildTranslationSystemPrompt(targetLangLabel: string): string {
+    const customPrompt = this.settings.deepseekCustomSystemPrompt.trim();
+    if (customPrompt) {
+      return customPrompt.replace(/\{\{targetLang\}\}/g, targetLangLabel);
+    }
+    return DEFAULT_TRANSLATION_SYSTEM_PROMPT.replace(
+      /\{\{targetLang\}\}/g,
+      targetLangLabel,
+    );
+  }
+
+  // ── Error helpers ─────────────────────────────────────────────
+
+  private getDeepLErrorMessage(response: RequestUrlResponse): string {
     const payload = response.json as TranslateResponse | undefined;
     if (response.status === 401 || response.status === 403) {
       return "DeepL rejected the API key. Check the key in plugin settings.";
@@ -401,11 +546,28 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
     return payload?.message ?? payload?.detail ?? response.text ?? `DeepL request failed with status ${response.status}.`;
   }
 
+  private getLLMErrorMessage(response: RequestUrlResponse): string {
+    const payload = response.json as DeepSeekChatResponse | undefined;
+    if (response.status === 401 || response.status === 403) {
+      return "LLM API rejected the API key. Check the key in plugin settings.";
+    }
+
+    if (response.status === 429) {
+      return "LLM API rate limit reached. Wait a moment and try again.";
+    }
+
+    if (response.status >= 500) {
+      return "LLM API is temporarily unavailable. Try again later.";
+    }
+
+    return payload?.error?.message ?? response.text ?? `LLM request failed with status ${response.status}.`;
+  }
+
   private async withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
     let timeoutId: number | undefined;
     const timeoutPromise = new Promise<T>((_, reject) => {
       timeoutId = window.setTimeout(() => {
-        reject(new DeepLError("DeepL request timed out."));
+        reject(new DeepLError("Translation request timed out."));
       }, timeoutMs);
     });
 
@@ -453,11 +615,13 @@ class TranslationResultModal extends Modal {
 
     debugLog("onOpen: _snap.text =", JSON.stringify(this._snap.text.slice(0, 80)));
 
+    const providerLabel = this.plugin.getProviderLabel();
+
     this.sourceTextArea = this.createTextAreaField("Original text", this._snap.text);
     this.translationTextArea = this.createTextAreaField("Translated text", "Translating...");
     this.statusEl = this.contentEl.createDiv({
       cls: "deepl-translate-status",
-      text: "Sending text to DeepL...",
+      text: `Sending text to ${providerLabel}...`,
     });
 
     const actions = this.contentEl.createDiv({ cls: "deepl-translate-actions" });
@@ -495,7 +659,8 @@ class TranslationResultModal extends Modal {
 
   async translate(): Promise<void> {
     try {
-      debugLog("translate(): sending to DeepL:", JSON.stringify(this._snap.text.slice(0, 100)));
+      const providerLabel = this.plugin.getProviderLabel();
+      debugLog(`translate(): sending to ${providerLabel}:`, JSON.stringify(this._snap.text.slice(0, 100)));
       const translatedText = await this.plugin.translateText(this._snap.text);
       this.translatedText = translatedText;
       this.translationTextArea.value = translatedText;
@@ -559,6 +724,8 @@ class TranslationResultModal extends Modal {
 
 class DeepLTranslateSettingTab extends PluginSettingTab {
   plugin: DeepLTranslateSelectionPlugin;
+  private deeplSection!: HTMLElement;
+  private deepseekSection!: HTMLElement;
 
   constructor(app: App, plugin: DeepLTranslateSelectionPlugin) {
     super(app, plugin);
@@ -569,13 +736,34 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-
-
+    // ── Translation Provider ────────────────────────────────────
     new Setting(containerEl)
+      .setName("Translation provider")
+      .setDesc("Choose the translation engine to use.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("deepl", "DeepL")
+          .addOption("deepseek", "DeepSeek / OpenAI compatible")
+          .setValue(this.plugin.settings.translationProvider)
+          .onChange(async (value) => {
+            this.plugin.settings.translationProvider = value as TranslationProvider;
+            await this.plugin.saveSettings();
+            this.toggleProviderSections();
+          });
+      });
+
+    // ── DeepL Section ───────────────────────────────────────────
+    this.deeplSection = containerEl.createDiv({ cls: "deepl-translate-provider-section" });
+
+    new Setting(this.deeplSection).setName("DeepL").setHeading();
+
+    new Setting(this.deeplSection)
       .setName("API key")
-      .setDesc("Stored in this vault's plugin data. Keys ending in :fx use the free endpoint automatically.")
+      .setDesc(
+        "Stored in this vault's plugin data. Keys ending in :fx use the free endpoint automatically.",
+      )
       .addText((text) => {
-        text.setPlaceholder("Paste your API key");
+        text.setPlaceholder("Paste your DeepL API key");
         text.setValue(this.plugin.settings.apiKey);
         text.inputEl.type = "password";
         text.inputEl.addClass("deepl-setting-api-key-input");
@@ -585,6 +773,102 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
         });
       });
 
+    new Setting(this.deeplSection)
+      .setName("Model type")
+      .setDesc("Pinned to quality_optimized for v1.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("quality_optimized", "Quality optimized")
+          .setValue(this.plugin.settings.modelType)
+          .onChange(async (value) => {
+            this.plugin.settings.modelType = value as ModelType;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    // ── DeepSeek / OpenAI-compatible Section ────────────────────
+    this.deepseekSection = containerEl.createDiv({ cls: "deepl-translate-provider-section" });
+
+    new Setting(this.deepseekSection)
+      .setName("DeepSeek / OpenAI compatible")
+      .setHeading();
+
+    new Setting(this.deepseekSection)
+      .setName("API key")
+      .setDesc("Your DeepSeek or OpenAI-compatible API key.")
+      .addText((text) => {
+        text.setPlaceholder("Paste your API key");
+        text.setValue(this.plugin.settings.deepseekApiKey);
+        text.inputEl.type = "password";
+        text.inputEl.addClass("deepl-setting-api-key-input");
+        text.onChange(async (value) => {
+          this.plugin.settings.deepseekApiKey = value.trim();
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(this.deepseekSection)
+      .setName("Model")
+      .setDesc("Model identifier (e.g. deepseek-v4-flash, gpt-4o).")
+      .addText((text) => {
+        text.setPlaceholder(DEFAULT_SETTINGS.deepseekModel);
+        text.setValue(this.plugin.settings.deepseekModel);
+        text.onChange(async (value) => {
+          this.plugin.settings.deepseekModel =
+            value.trim() || DEFAULT_SETTINGS.deepseekModel;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(this.deepseekSection)
+      .setName("Temperature")
+      .setDesc(
+        "Lower values produce more consistent translations (0.0–2.0). Recommended: 0.3.",
+      )
+      .addText((text) => {
+        text.setPlaceholder(String(DEFAULT_SETTINGS.deepseekTemperature));
+        text.setValue(String(this.plugin.settings.deepseekTemperature));
+        text.onChange(async (value) => {
+          const parsed = Number.parseFloat(value);
+          this.plugin.settings.deepseekTemperature =
+            Number.isFinite(parsed) && parsed >= 0 && parsed <= 2
+              ? parsed
+              : DEFAULT_SETTINGS.deepseekTemperature;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(this.deepseekSection)
+      .setName("API base URL")
+      .setDesc("DeepSeek or any OpenAI-compatible endpoint.")
+      .addText((text) => {
+        text.setPlaceholder(DEFAULT_SETTINGS.deepseekBaseUrl);
+        text.setValue(this.plugin.settings.deepseekBaseUrl);
+        text.onChange(async (value) => {
+          this.plugin.settings.deepseekBaseUrl =
+            value.trim() || DEFAULT_SETTINGS.deepseekBaseUrl;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(this.deepseekSection)
+      .setName("Custom system prompt")
+      .setDesc(
+        "Override the built-in translation prompt. Use {{targetLang}} as a placeholder for the target language. Leave empty to use the default.",
+      )
+      .addTextArea((textArea) => {
+        textArea.setPlaceholder("Leave empty to use the built-in prompt");
+        textArea.setValue(this.plugin.settings.deepseekCustomSystemPrompt);
+        textArea.inputEl.addClass("deepl-translate-system-prompt-textarea");
+        textArea.onChange(async (value) => {
+          this.plugin.settings.deepseekCustomSystemPrompt = value;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    // ── Common Settings ─────────────────────────────────────────
+    new Setting(containerEl).setName("Common").setHeading();
+
     new Setting(containerEl)
       .setName("Request timeout (ms)")
       .setDesc("How long to wait before failing the request.")
@@ -593,9 +877,10 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
         text.setValue(String(this.plugin.settings.requestTimeoutMs));
         text.onChange(async (value) => {
           const parsed = Number.parseInt(value, 10);
-          this.plugin.settings.requestTimeoutMs = Number.isFinite(parsed) && parsed > 0
-            ? parsed
-            : DEFAULT_SETTINGS.requestTimeoutMs;
+          this.plugin.settings.requestTimeoutMs =
+            Number.isFinite(parsed) && parsed > 0
+              ? parsed
+              : DEFAULT_SETTINGS.requestTimeoutMs;
           await this.plugin.saveSettings();
         });
       });
@@ -614,17 +899,13 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
-      .setName("Model type")
-      .setDesc("Pinned to quality_optimized for v1.")
-      .addDropdown((dropdown) => {
-        dropdown
-          .addOption("quality_optimized", "Quality optimized")
-          .setValue(this.plugin.settings.modelType)
-          .onChange(async (value) => {
-            this.plugin.settings.modelType = value as ModelType;
-            await this.plugin.saveSettings();
-          });
-      });
+    // Apply initial visibility
+    this.toggleProviderSections();
+  }
+
+  private toggleProviderSections(): void {
+    const isDeepL = this.plugin.settings.translationProvider === "deepl";
+    this.deeplSection.style.display = isDeepL ? "block" : "none";
+    this.deepseekSection.style.display = isDeepL ? "none" : "block";
   }
 }
