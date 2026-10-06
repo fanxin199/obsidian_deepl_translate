@@ -1,6 +1,6 @@
 # Privacy and network access
 
-This plugin translates text by sending the selected text to a third-party translation API only when the user explicitly runs a translation command.
+This plugin translates text by sending the selection, sentence, heading or paragraph the user explicitly chooses to translate to a third-party translation API. Installing buttons or selecting text does not send a request.
 
 ## Translation providers
 
@@ -8,13 +8,13 @@ The plugin supports two translation providers. Only the currently selected provi
 
 ### DeepL
 
-- The selected text is sent to DeepL for translation.
+- The text explicitly chosen for translation is sent to DeepL for translation.
 - The configured DeepL API key is sent only to DeepL translation endpoints for authentication.
 - Free-tier API keys (ending in `:fx`) are routed to the DeepL Free API endpoint; Pro keys are routed to the DeepL Pro API endpoint.
 
 ### DeepSeek / OpenAI-compatible LLM
 
-- The selected text is sent to the configured LLM API endpoint for translation.
+- The text explicitly chosen for translation is sent to the configured LLM API endpoint for translation.
 - A system prompt is included with each request to instruct the model to act as a translator.
 - The configured API key is sent only to the configured API endpoint for authentication.
 - The default endpoint is `https://api.deepseek.com`. Users may configure a custom base URL to use other OpenAI-compatible services.

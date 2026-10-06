@@ -29,10 +29,10 @@ function makeEditor(value = 'Hello world', from = 0, to = 5) {
   };
 }
 
-async function loadPlugin(editor = makeEditor(), settings = {}) {
+async function loadPlugin(editor = makeEditor(), settings = {}, options = {}) {
   const infoField = require('@codemirror/state').StateField.define({ create: () => ({ editor }), update: (value) => value });
-  const h = { editor, notices: [], commands: [], requests: [], events: new Map(), workspaceEvents: new Map(), pending: new Map(), cleanups: [], copyCalls: [], clipboard: [], extensions: [], infoField };
-  h.doc = { activeElement: null, execCommand(command) { h.copyCalls.push(command); return h.copyResult ?? true; } };
+  const h = { editor, notices: [], commands: [], requests: [], events: new Map(), workspaceEvents: new Map(), pending: new Map(), cleanups: [], copyCalls: [], clipboard: [], extensions: [], infoField, postProcessors: [], language: options.language ?? 'en' };
+  h.doc = options.document ?? { activeElement: null, execCommand(command) { h.copyCalls.push(command); return h.copyResult ?? true; } };
   class Element {
     constructor(options = {}) { this.children = []; this.events = new Map(); this.classes = new Set(); this.ownerDocument = h.doc; this.value = ''; Object.assign(this, options); }
     addClass(name) { this.classes.add(name); }
@@ -58,21 +58,28 @@ async function loadPlugin(editor = makeEditor(), settings = {}) {
     addSettingTab() {}
     addCommand(command) { h.commands.push(command); }
     addRibbonIcon(icon, title, callback) { h.ribbon = { icon, title, callback }; return new Element(); }
-    registerDomEvent(target, event, callback, options) { h.events.set(event, { callback, options }); }
+    registerDomEvent(target, event, callback, options) {
+      h.events.set(event, { callback, options });
+      if (target.addEventListener) {
+        target.addEventListener(event, callback, options);
+        h.cleanups.push(() => target.removeEventListener(event, callback, options));
+      }
+    }
     registerEvent() {}
     registerEditorExtension(extension) { h.extensions.push(extension); }
+    registerMarkdownPostProcessor(callback) { h.postProcessors.push(callback); return callback; }
     register(callback) { h.cleanups.push(callback); }
   }
   class Modal {
     constructor(app) { this.app = app; this.modalEl = new Element(); this.titleEl = new Element(); this.contentEl = new Element(); }
     open() { h.modal = this; this.onOpen(); }
-    close() { this.closed = true; }
+    close() { this.closed = true; this.onClose?.(); }
   }
   h.navigator = { clipboard: { async writeText(text) { h.clipboard.push(text); } } };
   let timerId = 0;
   const moduleObject = { exports: {} };
   vm.runInNewContext(bundle, {
-    module: moduleObject, exports: moduleObject.exports, document: h.doc, navigator: h.navigator, HTMLElement: Element,
+    module: moduleObject, exports: moduleObject.exports, document: h.doc, navigator: h.navigator, HTMLElement: h.doc.defaultView?.HTMLElement ?? Element,
     window: {
       setTimeout(callback, delay) {
         if (delay !== 0) return setTimeout(callback, delay);
@@ -88,6 +95,7 @@ async function loadPlugin(editor = makeEditor(), settings = {}) {
       return {
         Plugin, Modal, PluginSettingTab: class {}, MarkdownView: class {},
         editorInfoField: h.infoField,
+        getLanguage: () => h.language,
         Notice: class { constructor(message) { h.notices.push(message); } },
         async requestUrl(request) {
           h.requests.push(request);
@@ -103,7 +111,7 @@ async function loadPlugin(editor = makeEditor(), settings = {}) {
   await h.plugin.onload();
   h.dispatch = (event, inEditor = false) => h.events.get(event).callback({ target: new Element({ inEditor }) });
   h.flushCapture = () => { for (const [id, callback] of h.pending) { h.pending.delete(id); callback(); } };
-  h.runCommand = () => h.commands[0].editorCallback(editor);
+  h.runCommand = () => h.commands[0].checkCallback(false);
   h.open = () => h.plugin.openTranslationModal(editor);
   h.attachNativeSelection = (start, end, targetEditor = editor) => {
     const startNode = {}; const endNode = {};
@@ -118,6 +126,189 @@ async function loadPlugin(editor = makeEditor(), settings = {}) {
   };
   return h;
 }
+
+async function readingFixture(html, settings = {}) {
+  const { JSDOM } = require('jsdom');
+  const dom = new JSDOM(`<div class="is-mobile"><div class="markdown-preview-view">${html}</div></div><div id="palette">Translate selection</div>`);
+  const h = await loadPlugin(makeEditor('Hidden Markdown source'), settings, { document: dom.window.document, language: 'zh-CN' });
+  const root = dom.window.document.querySelector('.markdown-preview-view');
+  const view = { editor: h.editor, file: { path: 'reading.md' }, getMode: () => 'preview', previewMode: { containerEl: root } };
+  h.plugin.app.workspace.activeEditor = null;
+  h.plugin.app.workspace.getActiveViewOfType = () => view;
+  h.workspaceEvents.get('layout-change')();
+  const select = (element, start = 0, end = element.textContent.length) => {
+    const range = dom.window.document.createRange();
+    range.setStart(element.firstChild, start); range.setEnd(element.firstChild, end);
+    const selection = dom.window.getSelection();
+    selection.removeAllRanges(); selection.addRange(range);
+    dom.window.document.dispatchEvent(new dom.window.Event('selectionchange'));
+    h.flushCapture();
+  };
+  const toolbarButton = (text) => Array.from(dom.window.document.querySelectorAll('.deepl-reading-actions button')).find((button) => button.textContent === text);
+  return { h, dom, root, view, select, toolbarButton };
+}
+
+test('reading-mode command is available with no active editor and translates selected rendered text', async () => {
+  const { h, dom, root, select } = await readingFixture('<p><span id="word">This complete sentence is selected.</span></p>');
+  assert.equal(h.commands[0].checkCallback(true), true);
+  select(root.querySelector('#word'));
+  assert.equal(h.requests.length, 0, 'selecting does not send text without a translation action');
+  h.runCommand();
+  assert.equal(h.modal.sourceTextArea.value, 'This complete sentence is selected.');
+  await new Promise(setImmediate);
+  assert.equal(new URLSearchParams(h.requests[0].body).get('text'), 'This complete sentence is selected.');
+  assert.equal(h.modal.insertButton, undefined); assert.equal(h.modal.replaceButton, undefined);
+  await h.modal.copyTranslation(); assert.deepEqual(h.clipboard, ['你好']);
+  h.modal.insertBelow(); h.modal.replaceSelection();
+  assert.equal(h.editor.value, 'Hidden Markdown source'); assert.equal(h.editor.replacements.length, 0);
+  dom.window.close();
+});
+
+test('screenshot scenario: tapping 译 translates the full wrapped scientific heading without dragging selection handles', async () => {
+  const title = 'Neoantigen-driven B cell and CD4 T follicular helper cell collaboration promotes anti-tumor CD8 T cell responses';
+  const { h, dom, root, select } = await readingFixture(`<h1><span id="word">Neoantigen</span>${title.slice(10)}</h1><blockquote><p>Different citation text.</p></blockquote>`);
+  select(root.querySelector('#word'));
+  assert.equal(h.plugin.cachedReadingSelection.text, 'Neoantigen');
+  root.querySelector('h1 .deepl-translate-block-action').click();
+  assert.equal(h.modal.sourceTextArea.value, title);
+  await new Promise(setImmediate);
+  assert.equal(new URLSearchParams(h.requests[0].body).get('text'), title);
+  assert.equal(h.editor.replacements.length, 0);
+  dom.window.close();
+});
+
+test('a paragraph button also works with no native selection at all', async () => {
+  const { h, dom, root } = await readingFixture('<p>Translate this entire paragraph without a long press.</p>');
+  assert.equal(h.requests.length, 0);
+  root.querySelector('.deepl-translate-block-action').click();
+  assert.equal(h.modal.sourceTextArea.value, 'Translate this entire paragraph without a long press.');
+  await new Promise(setImmediate);
+  assert.equal(h.requests.length, 1);
+  dom.window.close();
+});
+
+test('long-pressing one word offers whole-sentence translation in an app-owned toolbar', async () => {
+  const { h, dom, root, select, toolbarButton } = await readingFixture('<p>First sentence. <strong><span id="word">Second</span> sentence has more words.</strong> Last sentence.</p>');
+  select(root.querySelector('#word'));
+  assert.ok(toolbarButton('翻译选中')); assert.ok(toolbarButton('翻译整句')); assert.ok(toolbarButton('翻译整段'));
+  toolbarButton('翻译整句').click();
+  assert.equal(h.modal.sourceTextArea.value, 'Second sentence has more words.');
+  await new Promise(setImmediate);
+  assert.equal(new URLSearchParams(h.requests[0].body).get('text'), 'Second sentence has more words.');
+  assert.equal(dom.window.document.querySelector('.deepl-reading-actions'), null);
+  dom.window.close();
+});
+
+test('whole-paragraph translation does not leak UI labels, hidden elements, or lose line breaks', async () => {
+  const { h, dom, root, select, toolbarButton } = await readingFixture('<p><span id="word">First</span> sentence.<br>Second <em>formatted</em> sentence.<span aria-hidden="true">HIDDEN</span><button>Other UI</button></p>');
+  select(root.querySelector('#word'));
+  toolbarButton('翻译整段').click();
+  assert.equal(h.modal.sourceTextArea.value, 'First sentence.\nSecond formatted sentence.');
+  await new Promise(setImmediate);
+  dom.window.close();
+});
+
+test('CJK sentence boundaries work when only two characters are selected', async () => {
+  const { h, dom, root, select, toolbarButton } = await readingFixture('<p><span id="text">第一句。第二句包含更多内容！第三句。</span></p>');
+  select(root.querySelector('#text'), 4, 6);
+  toolbarButton('翻译整句').click();
+  assert.equal(h.modal.sourceTextArea.value, '第二句包含更多内容！');
+  await new Promise(setImmediate);
+  dom.window.close();
+});
+
+test('repeated words select the containing sentence at the actual DOM occurrence', async () => {
+  const { h, dom, root, select, toolbarButton } = await readingFixture('<p>Hello first sentence. <span id="word">Hello</span> second sentence.</p>');
+  select(root.querySelector('#word'));
+  toolbarButton('翻译整句').click();
+  assert.equal(h.modal.sourceTextArea.value, 'Hello second sentence.');
+  await new Promise(setImmediate);
+  dom.window.close();
+});
+
+test('selected reading text survives command-palette focus loss with no hidden-editor fallback', async () => {
+  const { h, dom, root, select } = await readingFixture('<p><span id="text">This is the whole selected sentence.</span></p>');
+  select(root.querySelector('#text'));
+  const range = dom.window.document.createRange();
+  range.selectNodeContents(dom.window.document.querySelector('#palette'));
+  dom.window.getSelection().removeAllRanges(); dom.window.getSelection().addRange(range);
+  dom.window.document.dispatchEvent(new dom.window.Event('selectionchange')); h.flushCapture();
+  h.runCommand();
+  assert.equal(h.modal.sourceTextArea.value, 'This is the whole selected sentence.');
+  await new Promise(setImmediate);
+  assert.equal(h.editor.replacements.length, 0);
+  dom.window.close();
+});
+
+test('reading selection handles can expand across multiple rendered blocks', async () => {
+  const { h, dom, root } = await readingFixture('<p><span id="first">First paragraph.</span></p><p><span id="second">Second paragraph.</span></p>');
+  const range = dom.window.document.createRange();
+  range.setStart(root.querySelector('#first').firstChild, 0);
+  range.setEnd(root.querySelector('#second').firstChild, 17);
+  dom.window.getSelection().removeAllRanges(); dom.window.getSelection().addRange(range);
+  h.runCommand();
+  assert.equal(h.modal.sourceTextArea.value, 'First paragraph.\nSecond paragraph.');
+  await new Promise(setImmediate);
+  dom.window.close();
+});
+
+test('select-all within the reading pane excludes plugin actions and note properties', async () => {
+  const { h, dom, root } = await readingFixture('<div class="metadata-container">PRIVATE PROPERTY</div><h1>Heading</h1><p>Paragraph.</p>');
+  const range = dom.window.document.createRange(); range.selectNodeContents(root);
+  dom.window.getSelection().removeAllRanges(); dom.window.getSelection().addRange(range);
+  h.runCommand();
+  assert.equal(h.modal.sourceTextArea.value, 'Heading\nParagraph.');
+  await new Promise(setImmediate);
+  dom.window.close();
+});
+
+test('settings/dialog selections outside the reading pane do not trigger translation', async () => {
+  const { h, dom } = await readingFixture('<p>Note text.</p>');
+  const range = dom.window.document.createRange(); range.selectNodeContents(dom.window.document.querySelector('#palette'));
+  dom.window.getSelection().removeAllRanges(); dom.window.getSelection().addRange(range);
+  h.runCommand();
+  assert.equal(h.requests.length, 0); assert.equal(h.modal, undefined);
+  assert.match(h.notices.pop(), /译/);
+  dom.window.close();
+});
+
+test('changing note identity invalidates a cached reading selection before any API request', async () => {
+  const { h, dom, root, view, select } = await readingFixture('<p><span id="word">Selected</span> text.</p>');
+  select(root.querySelector('#word'));
+  dom.window.getSelection().removeAllRanges(); view.file = { path: 'different.md' };
+  h.runCommand();
+  assert.equal(h.requests.length, 0); assert.equal(h.modal, undefined);
+  dom.window.close();
+});
+
+test('rerendering the selected block invalidates its cached toolbar', async () => {
+  const { h, dom, root, select, toolbarButton } = await readingFixture('<p><span id="word">Selected</span> text.</p>');
+  select(root.querySelector('#word'));
+  const button = toolbarButton('翻译整段'); root.querySelector('p').remove();
+  button.click();
+  assert.equal(h.requests.length, 0); assert.equal(dom.window.document.querySelector('.deepl-reading-actions'), null);
+  dom.window.close();
+});
+
+test('reading button installation is idempotent and cleaned up on plugin unload', async () => {
+  const { h, dom, root, select } = await readingFixture('<h1>Title</h1><ul><li><p><span id="word">Paragraph</span> text.</p></li></ul>');
+  for (const callback of h.postProcessors) { callback(root, {}); callback(root, {}); }
+  assert.equal(root.querySelectorAll('.deepl-translate-block-action').length, 2);
+  select(root.querySelector('#word'));
+  assert.ok(dom.window.document.querySelector('.deepl-reading-actions'));
+  h.cleanups.forEach((cleanup) => cleanup());
+  assert.equal(root.querySelectorAll('.deepl-translate-block-action').length, 0);
+  assert.equal(dom.window.document.querySelector('.deepl-reading-actions'), null);
+  dom.window.close();
+});
+
+test('missing provider credentials keep paragraph translation on the normal settings path', async () => {
+  const { h, dom, root } = await readingFixture('<p>Whole paragraph.</p>', { apiKey: '' });
+  let settingsOpened = false; h.plugin.openPluginSettings = () => { settingsOpened = true; };
+  root.querySelector('.deepl-translate-block-action').click();
+  assert.ok(settingsOpened); assert.equal(h.requests.length, 0);
+  dom.window.close();
+});
 
 test('release metadata enables mobile and keeps version files synchronized', () => {
   const root = path.join(__dirname, '..');
@@ -412,6 +603,7 @@ test('command palette and ribbon both open the translation modal', async () => {
   h.runCommand();
   await new Promise(setImmediate);
   assert.equal(h.modal.translationTextArea.value, '你好');
+  h.modal.close();
   h.modal = null;
   h.ribbon.callback();
   await new Promise(setImmediate);
@@ -425,7 +617,7 @@ test('a missing editor or empty selection shows guidance without making an API r
   assert.equal(h.notices.pop(), 'Select some text first.');
   h.plugin.app.workspace.activeEditor = null;
   h.ribbon.callback();
-  assert.match(h.notices.pop(), /editing mode/);
+  assert.match(h.notices.pop(), /Open a note/);
   assert.equal(h.requests.length, 0);
 });
 

@@ -4,7 +4,7 @@
 
 `.github/workflows/release.yml` tests every push to `main` and pull request. A version tag runs the tests and then builds and publishes a GitHub Release with `main.js`, `manifest.json`, `styles.css`, a ZIP, and SHA-256 checksums. GitHub-hosted runners use their short-lived `GITHUB_TOKEN`; no personal token is committed or needed for this workflow.
 
-Before a new release, update `manifest.json`, `package.json`, the root/package versions in `package-lock.json`, and `versions.json`. Add matching release notes at `.github/release-notes/<version>.md`, then run `npm run typecheck` and `npm test` and commit the changes. Push the commit to `main`, then push a tag whose name exactly matches the version (for example `1.2.0`, without a `v` prefix).
+Before a new release, update `manifest.json`, `package.json`, the root/package versions in `package-lock.json`, and `versions.json`. Add matching release notes at `.github/release-notes/<version>.md`, then run `npm run typecheck`, `npm test`, and `npm run test:mobile` (Chrome/Chromium required) and commit the changes. Push the commit to `main`, then push a tag whose name exactly matches the version (for example `1.2.0`, without a `v` prefix).
 
 The workflow requires GitHub Actions to be enabled in the repository. Its release job requests `contents: write`. Organization/repository policies must permit the pinned official `actions/checkout` and `actions/setup-node` actions and the requested token permission. Check failed runs in the repository's Actions tab; a pushed tag alone does not confirm publication.
 

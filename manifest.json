@@ -1,9 +1,9 @@
 {
   "id": "deepl-translate-selection",
   "name": "DeepL Translate Selection",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "minAppVersion": "1.5.0",
-  "description": "Translate selected text with DeepL or DeepSeek (LLM) from the editor context menu. Auto-detects Chinese-English direction.",
+  "description": "Translate selections, sentences, headings and paragraphs with DeepL or DeepSeek in reading and editing modes. Supports desktop and mobile.",
   "author": "Yunfeng",
   "authorUrl": "https://github.com/fanxin199",
   "fundingUrl": "",

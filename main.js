@@ -25,6 +25,69 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var import_view = require("@codemirror/view");
+
+// reading-selection.ts
+var READING_BLOCKS = "p,h1,h2,h3,h4,h5,h6,li,td,th";
+var EXCLUDED = "button,input,textarea,script,style,svg,[aria-hidden='true'],.metadata-container,.deepl-reading-actions,.deepl-translate-block-action,.collapse-indicator,.heading-collapse-indicator";
+function renderedText(node, trim = true) {
+  const visit = (current) => {
+    if (current.nodeType === 3) return current.textContent ?? "";
+    const element = current.nodeType === 1 ? current : null;
+    if (element?.matches(EXCLUDED)) return "";
+    if (element?.tagName === "BR") return "\n";
+    const text2 = Array.from(current.childNodes).map(visit).join("");
+    return element?.matches("p,h1,h2,h3,h4,h5,h6,li,tr,div") ? `${text2}
+` : text2;
+  };
+  const text = visit(node).replace(/\n{3,}/g, "\n\n");
+  return trim ? text.trim() : text;
+}
+function readingBlock(root, node) {
+  const element = node.nodeType === 1 ? node : node.parentElement;
+  if (!element || element.closest(EXCLUDED)) return null;
+  const block = element.closest(READING_BLOCKS);
+  return block && root.contains(block) ? block : null;
+}
+function blockContext(block) {
+  const text = renderedText(block);
+  return text ? { text, sentenceText: text, paragraphText: text, blockText: text, block } : null;
+}
+function containingSentence(text, start, end) {
+  if (typeof Intl.Segmenter !== "function") return text;
+  const segments = new Intl.Segmenter(void 0, { granularity: "sentence" }).segment(text);
+  return Array.from(segments).filter((segment) => segment.index < end && segment.index + segment.segment.length > start).map((segment) => segment.segment).join("").trim() || text;
+}
+function selectedReadingContext(root) {
+  const selection = root.ownerDocument.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
+  const intersecting = Array.from(root.querySelectorAll(READING_BLOCKS)).filter((block2) => readingBlock(root, block2) && range.intersectsNode(block2));
+  const block = readingBlock(root, range.startContainer) ?? intersecting[0];
+  const endBlock = readingBlock(root, range.endContainer) ?? intersecting[intersecting.length - 1];
+  if (!block || !endBlock) return null;
+  const text = renderedText(range.cloneContents());
+  const blockText = renderedText(block);
+  if (!text || !blockText) return null;
+  if (block !== endBlock) {
+    return { text, sentenceText: text, paragraphText: text, blockText, block };
+  }
+  const prefix = root.ownerDocument.createRange();
+  prefix.selectNodeContents(block);
+  prefix.setEnd(range.startContainer, range.startOffset);
+  const rawBlock = renderedText(block, false);
+  const leadingWhitespace = rawBlock.length - rawBlock.trimStart().length;
+  const start = Math.max(0, renderedText(prefix.cloneContents(), false).length - leadingWhitespace);
+  return {
+    text,
+    paragraphText: blockText,
+    blockText,
+    block,
+    sentenceText: containingSentence(blockText, start, start + text.length)
+  };
+}
+
+// main.ts
 var DEFAULT_SETTINGS = {
   translationProvider: "deepl",
   apiKey: "",
@@ -52,7 +115,7 @@ var DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaking
 5. For academic or technical content, use standard terminology in the target field.
 6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
 var DEBUG = false;
-var BUILD_ID = "v1.2.1";
+var BUILD_ID = "v1.3.0";
 function debugLog(...args) {
   if (DEBUG) {
     console.debug(`[DeepL Translate ${BUILD_ID}]`, ...args);
@@ -85,6 +148,10 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     this.cachedSelection = null;
     this.preserveSelectionForUI = false;
     this.editorViews = /* @__PURE__ */ new Set();
+    this.cachedReadingSelection = null;
+    this.readingActions = null;
+    this.readingPointerInNote = false;
+    this.translationModalOpen = false;
   }
   async onload() {
     await this.loadSettings();
@@ -92,12 +159,16 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     this.addCommand({
       id: "translate-selection",
       name: "Translate selection",
-      editorCallback: (editor) => {
-        debugLog("editorCallback triggered");
-        void this.openTranslationModal(editor);
+      checkCallback: (checking) => {
+        const available = !!this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView) || !!this.getActiveEditor();
+        if (!checking && available) void this.openActiveTranslation();
+        return available;
       }
     });
     this.registerDomEvent(document, "pointerdown", (evt) => {
+      const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+      const root = view ? this.getReadingRoot(view) : null;
+      this.readingPointerInNote = !!root && evt.target instanceof HTMLElement && root.contains(evt.target) && !evt.target.closest(".deepl-translate-block-action");
       this.preserveSelectionForUI = !(evt.target instanceof HTMLElement && evt.target.closest(".cm-editor"));
       this.captureCurrentSelection("pointerdown");
     }, true);
@@ -131,17 +202,20 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     const clearSelection = () => {
       this.cachedSelection = null;
       this.preserveSelectionForUI = false;
+      this.cachedReadingSelection = null;
+      this.readingPointerInNote = false;
+      this.hideReadingActions();
     };
     this.registerEvent(this.app.workspace.on("active-leaf-change", clearSelection));
     this.registerEvent(this.app.workspace.on("file-open", clearSelection));
     this.addRibbonIcon("languages", "Translate selection", () => {
-      const editor = this.getActiveEditor();
-      if (editor) {
-        void this.openTranslationModal(editor);
-      } else {
-        new import_obsidian.Notice("Open a note in editing mode and select some text first.");
-      }
+      void this.openActiveTranslation();
     });
+    this.registerMarkdownPostProcessor((element) => this.installReadingButtons(element));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.installActiveReadingButtons()));
+    this.installActiveReadingButtons();
+    this.register(() => this.hideReadingActions());
+    this.register(() => document.querySelectorAll?.(".deepl-translate-block-action").forEach((button) => button.remove()));
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
         debugLog("editor-menu triggered");
@@ -162,7 +236,9 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
   }
   // ───────────────────────── Selection capture ──────────────────
   getActiveEditor() {
-    return this.app.workspace.activeEditor?.editor ?? this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView)?.editor ?? null;
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    if (view?.getMode?.() === "preview") return null;
+    return this.app.workspace.activeEditor?.editor ?? view?.editor ?? null;
   }
   readEditorSelection(editor) {
     const from = { ...editor.getCursor("from") };
@@ -217,6 +293,25 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     return this.getActiveEditor() === snapshot.editor && this.getEditorFilePath(snapshot.editor) === snapshot.filePath && snapshot.editor.getRange(snapshot.from, snapshot.to) === snapshot.text;
   }
   captureCurrentSelection(source, clearEmptySelection = false) {
+    if (this.translationModalOpen) {
+      this.hideReadingActions();
+      return;
+    }
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    const root = view ? this.getReadingRoot(view) : null;
+    if (view && root) {
+      const context = selectedReadingContext(root);
+      if (context) {
+        this.cachedReadingSelection = { ...context, source: "reading", view, filePath: view.file?.path ?? null };
+        this.showReadingActions();
+      } else if (!this.cachedReadingSelection || !this.isReadingSnapshotValid(this.cachedReadingSelection) || clearEmptySelection && this.readingPointerInNote) {
+        this.cachedReadingSelection = null;
+        this.hideReadingActions();
+      }
+      return;
+    }
+    this.cachedReadingSelection = null;
+    this.hideReadingActions();
     const editor = this.getActiveEditor();
     if (!editor) {
       this.cachedSelection = null;
@@ -231,12 +326,113 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     }
   }
   // ───────────────────────── Modal entry point ──────────────────
+  installActiveReadingButtons() {
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    const root = view ? this.getReadingRoot(view) : null;
+    if (root) this.installReadingButtons(root);
+  }
+  installReadingButtons(element) {
+    const blocks = Array.from(element.querySelectorAll(READING_BLOCKS));
+    if (element.matches(READING_BLOCKS)) blocks.unshift(element);
+    for (const block of blocks) {
+      if (block.closest(".metadata-container,.frontmatter")) continue;
+      if (block.querySelector(".deepl-translate-block-action") || !blockContext(block)) continue;
+      if (block.matches("li,td,th") && block.querySelector("p")) continue;
+      const button = block.ownerDocument.createElement("button");
+      button.className = "deepl-translate-block-action";
+      button.type = "button";
+      button.textContent = this.isChinese() ? "\u8BD1" : "Tr";
+      button.title = this.isChinese() ? "\u7FFB\u8BD1\u6574\u4E2A\u6807\u9898\u6216\u6BB5\u843D" : "Translate this heading or paragraph";
+      button.setAttribute("aria-label", button.title);
+      button.addEventListener("pointerdown", (event) => event.stopPropagation());
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+        const root = view ? this.getReadingRoot(view) : null;
+        const context = blockContext(block);
+        if (view && root?.contains(block) && context) {
+          void this.openSnapshot({ ...context, source: "reading", view, filePath: view.file?.path ?? null });
+        }
+      });
+      block.prepend(button);
+    }
+  }
+  isChinese() {
+    return (0, import_obsidian.getLanguage)().startsWith("zh");
+  }
+  getReadingRoot(view) {
+    return view.getMode?.() === "preview" ? view.previewMode?.containerEl ?? null : null;
+  }
+  isReadingSnapshotValid(snapshot) {
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    const root = view ? this.getReadingRoot(view) : null;
+    return view === snapshot.view && (view?.file?.path ?? null) === snapshot.filePath && !!root?.contains(snapshot.block) && snapshot.block.isConnected && renderedText(snapshot.block) === snapshot.blockText;
+  }
+  hideReadingActions() {
+    this.readingActions?.remove();
+    this.readingActions = null;
+  }
+  showReadingActions() {
+    if (this.readingActions || !this.cachedReadingSelection) return;
+    const doc = this.cachedReadingSelection.block.ownerDocument;
+    const actions = doc.createElement("div");
+    actions.className = "deepl-reading-actions";
+    actions.setAttribute("role", "toolbar");
+    actions.setAttribute("aria-label", this.isChinese() ? "\u7FFB\u8BD1" : "Translate");
+    for (const [scope, label] of [
+      ["text", this.isChinese() ? "\u7FFB\u8BD1\u9009\u4E2D" : "Selection"],
+      ["sentenceText", this.isChinese() ? "\u7FFB\u8BD1\u6574\u53E5" : "Sentence"],
+      ["paragraphText", this.isChinese() ? "\u7FFB\u8BD1\u6574\u6BB5" : "Paragraph"]
+    ]) {
+      const button = doc.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      button.addEventListener("click", () => {
+        const snapshot = this.cachedReadingSelection;
+        if (snapshot && this.isReadingSnapshotValid(snapshot)) {
+          void this.openSnapshot({ ...snapshot, text: snapshot[scope] });
+        } else {
+          this.hideReadingActions();
+        }
+      });
+      actions.append(button);
+    }
+    doc.body.append(actions);
+    this.readingActions = actions;
+  }
+  async openActiveTranslation() {
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    const root = view ? this.getReadingRoot(view) : null;
+    if (view && root) {
+      const context = selectedReadingContext(root);
+      const snapshot = context ? { ...context, source: "reading", view, filePath: view.file?.path ?? null } : this.cachedReadingSelection;
+      if (snapshot && this.isReadingSnapshotValid(snapshot)) {
+        await this.openSnapshot(snapshot);
+      } else {
+        new import_obsidian.Notice(this.isChinese() ? "\u957F\u6309\u9009\u4E2D\u6587\u5B57\uFF0C\u6216\u70B9\u51FB\u6807\u9898/\u6BB5\u843D\u65C1\u7684\u201C\u8BD1\u201D\u6309\u94AE\u3002" : "Select text, or tap Tr beside a heading or paragraph.");
+      }
+      return;
+    }
+    const editor = this.getActiveEditor();
+    if (editor) await this.openTranslationModal(editor);
+    else new import_obsidian.Notice("Open a note and select some text first.");
+  }
   async openTranslationModal(editor) {
     const resolvedSnapshot = this.buildSnapshot(editor);
     if (!resolvedSnapshot) {
       new import_obsidian.Notice("Select some text first.");
       return;
     }
+    await this.openSnapshot(resolvedSnapshot);
+  }
+  async openSnapshot(resolvedSnapshot) {
+    if (this.translationModalOpen) return;
+    if (resolvedSnapshot.source === "reading" && !this.isReadingSnapshotValid(resolvedSnapshot)) return;
     const activeApiKey = this.settings.translationProvider === "deepl" ? this.settings.apiKey.trim() : this.settings.deepseekApiKey.trim();
     if (!activeApiKey) {
       new import_obsidian.Notice("API key is not configured.");
@@ -244,9 +440,18 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
       return;
     }
     debugLog("Opening modal with text:", JSON.stringify(resolvedSnapshot.text.slice(0, 100)));
+    this.hideReadingActions();
+    this.cachedReadingSelection = null;
     const modal = new TranslationResultModal(this.app, this, resolvedSnapshot);
+    this.translationModalOpen = true;
     modal.open();
     await modal.translate();
+  }
+  onTranslationModalClosed() {
+    this.translationModalOpen = false;
+    this.cachedReadingSelection = null;
+    this.cachedSelection = null;
+    this.hideReadingActions();
   }
   /**
    * Build a snapshot for the command-palette / hotkey path
@@ -462,13 +667,10 @@ var TranslationResultModal = class extends import_obsidian.Modal {
     super(app);
     this.translatedText = "";
     this.plugin = plugin;
-    this._snap = {
-      editor: snap.editor,
-      filePath: snap.filePath,
+    this._snap = snap.source === "reading" ? { ...snap } : {
+      ...snap,
       from: { ...snap.from },
-      to: { ...snap.to },
-      text: typeof snap.text === "string" ? snap.text : "",
-      source: snap.source
+      to: { ...snap.to }
     };
     debugLog("Modal constructor: _snap.text =", JSON.stringify(this._snap.text.slice(0, 80)));
   }
@@ -486,21 +688,23 @@ var TranslationResultModal = class extends import_obsidian.Modal {
       text: `Sending text to ${providerLabel}...`
     });
     const actions = this.contentEl.createDiv({ cls: "deepl-translate-actions" });
-    this.insertButton = actions.createEl("button", {
-      text: "Insert below",
-      cls: "mod-cta"
-    });
-    this.insertButton.disabled = true;
-    this.insertButton.addEventListener("click", () => {
-      this.insertBelow();
-    });
-    this.replaceButton = actions.createEl("button", {
-      text: "Replace selection"
-    });
-    this.replaceButton.disabled = true;
-    this.replaceButton.addEventListener("click", () => {
-      this.replaceSelection();
-    });
+    if (this._snap.source !== "reading") {
+      this.insertButton = actions.createEl("button", {
+        text: "Insert below",
+        cls: "mod-cta"
+      });
+      this.insertButton.disabled = true;
+      this.insertButton.addEventListener("click", () => {
+        this.insertBelow();
+      });
+      this.replaceButton = actions.createEl("button", {
+        text: "Replace selection"
+      });
+      this.replaceButton.disabled = true;
+      this.replaceButton.addEventListener("click", () => {
+        this.replaceSelection();
+      });
+    }
     this.copyButton = actions.createEl("button", {
       text: "Copy"
     });
@@ -512,6 +716,10 @@ var TranslationResultModal = class extends import_obsidian.Modal {
       text: "Cancel"
     });
     cancelButton.addEventListener("click", () => this.close());
+  }
+  onClose() {
+    this.plugin.onTranslationModalClosed();
+    this.contentEl.empty();
   }
   async translate() {
     try {
@@ -545,11 +753,12 @@ var TranslationResultModal = class extends import_obsidian.Modal {
     return textArea;
   }
   enableActions() {
-    this.insertButton.disabled = false;
-    this.replaceButton.disabled = false;
+    if (this.insertButton) this.insertButton.disabled = false;
+    if (this.replaceButton) this.replaceButton.disabled = false;
     this.copyButton.disabled = false;
   }
   insertBelow() {
+    if (this._snap.source === "reading") return;
     if (!this.isSelectionUnchanged()) return;
     const insertion = `
 ${this.translatedText}`;
@@ -558,6 +767,7 @@ ${this.translatedText}`;
     this.close();
   }
   replaceSelection() {
+    if (this._snap.source === "reading") return;
     if (!this.isSelectionUnchanged()) return;
     this._snap.editor.replaceRange(this.translatedText, this._snap.from, this._snap.to);
     new import_obsidian.Notice("Replaced the selected text with the translation.");
@@ -589,6 +799,7 @@ ${this.translatedText}`;
     }
   }
   isSelectionUnchanged() {
+    if (this._snap.source === "reading") return false;
     if (this.plugin.isSnapshotValid(this._snap)) {
       return true;
     }

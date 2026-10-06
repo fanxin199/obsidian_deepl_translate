@@ -1,4 +1,5 @@
 .deepl-translate-modal {
+  box-sizing: border-box;
   width: min(860px, 92vw);
 }
 
@@ -81,4 +82,47 @@
   font-family: var(--font-monospace);
   font-size: 0.85rem;
   line-height: 1.5;
+}
+
+.deepl-translate-block-action {
+  float: right;
+  margin-inline-start: 0.5rem;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.8rem;
+  font-weight: normal;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.deepl-reading-actions {
+  position: fixed;
+  z-index: 1000;
+  right: 1rem;
+  bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.6rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  background: var(--background-primary);
+  box-shadow: 0 4px 16px var(--background-modifier-box-shadow);
+}
+
+.deepl-reading-actions button {
+  min-height: 44px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.markdown-source-view .deepl-translate-block-action {
+  display: none;
+}
+
+.is-mobile .deepl-translate-block-action {
+  min-width: 44px;
+  min-height: 44px;
 }

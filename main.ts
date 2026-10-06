@@ -10,9 +10,14 @@ import {
   RequestUrlResponse,
   Setting,
   editorInfoField,
+  getLanguage,
   requestUrl,
 } from "obsidian";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
+import {
+  READING_BLOCKS, blockContext, renderedText, selectedReadingContext,
+  ReadingSelectionSnapshot,
+} from "./reading-selection";
 
 type TargetLang = "ZH" | "EN-US";
 type ModelType = "quality_optimized";
@@ -67,6 +72,8 @@ interface SelectionSnapshot {
   source: "editor" | "native";
 }
 
+type TranslationSnapshot = SelectionSnapshot | ReadingSelectionSnapshot;
+
 const DEFAULT_SETTINGS: DeepLTranslateSettings = {
   translationProvider: "deepl",
   apiKey: "",
@@ -96,7 +103,7 @@ const DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaki
 6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
 
 const DEBUG = false;
-const BUILD_ID = "v1.2.1";
+const BUILD_ID = "v1.3.0";
 
 function debugLog(...args: unknown[]): void {
   if (DEBUG) {
@@ -149,6 +156,10 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
   private preserveSelectionForUI = false;
   private selectionCaptureTimer: number | undefined;
   private editorViews = new Set<EditorView>();
+  private cachedReadingSelection: ReadingSelectionSnapshot | null = null;
+  private readingActions: HTMLElement | null = null;
+  private readingPointerInNote = false;
+  private translationModalOpen = false;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -159,15 +170,20 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
     this.addCommand({
       id: "translate-selection",
       name: "Translate selection",
-      editorCallback: (editor: Editor) => {
-        debugLog("editorCallback triggered");
-        void this.openTranslationModal(editor);
+      checkCallback: (checking: boolean) => {
+        const available = !!this.app.workspace.getActiveViewOfType(MarkdownView) || !!this.getActiveEditor();
+        if (!checking && available) void this.openActiveTranslation();
+        return available;
       },
     });
 
     // Pointer events cover both a Windows mouse and Android touch input.
     // Capture before a ribbon button, mobile toolbar, or menu takes focus.
     this.registerDomEvent(document, "pointerdown", (evt: PointerEvent) => {
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      const root = view ? this.getReadingRoot(view) : null;
+      this.readingPointerInNote = !!root && evt.target instanceof HTMLElement
+        && root.contains(evt.target) && !evt.target.closest(".deepl-translate-block-action");
       this.preserveSelectionForUI = !(evt.target instanceof HTMLElement
         && evt.target.closest(".cm-editor"));
       this.captureCurrentSelection("pointerdown");
@@ -204,18 +220,22 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
     const clearSelection = () => {
       this.cachedSelection = null;
       this.preserveSelectionForUI = false;
+      this.cachedReadingSelection = null;
+      this.readingPointerInNote = false;
+      this.hideReadingActions();
     };
     this.registerEvent(this.app.workspace.on("active-leaf-change", clearSelection));
     this.registerEvent(this.app.workspace.on("file-open", clearSelection));
 
     this.addRibbonIcon("languages", "Translate selection", () => {
-      const editor = this.getActiveEditor();
-      if (editor) {
-        void this.openTranslationModal(editor);
-      } else {
-        new Notice("Open a note in editing mode and select some text first.");
-      }
+      void this.openActiveTranslation();
     });
+
+    this.registerMarkdownPostProcessor((element) => this.installReadingButtons(element));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.installActiveReadingButtons()));
+    this.installActiveReadingButtons();
+    this.register(() => this.hideReadingActions());
+    this.register(() => document.querySelectorAll?.(".deepl-translate-block-action").forEach((button) => button.remove()));
 
     // ── Right-click context menu entry ─────────────────────────
     this.registerEvent(
@@ -249,8 +269,10 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
   // ───────────────────────── Selection capture ──────────────────
 
   private getActiveEditor(): Editor | null {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (view?.getMode?.() === "preview") return null;
     return this.app.workspace.activeEditor?.editor
-      ?? this.app.workspace.getActiveViewOfType(MarkdownView)?.editor
+      ?? view?.editor
       ?? null;
   }
 
@@ -328,6 +350,26 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
   }
 
   private captureCurrentSelection(source: string, clearEmptySelection = false): void {
+    if (this.translationModalOpen) {
+      this.hideReadingActions();
+      return;
+    }
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const root = view ? this.getReadingRoot(view) : null;
+    if (view && root) {
+      const context = selectedReadingContext(root);
+      if (context) {
+        this.cachedReadingSelection = { ...context, source: "reading", view, filePath: view.file?.path ?? null };
+        this.showReadingActions();
+      } else if (!this.cachedReadingSelection || !this.isReadingSnapshotValid(this.cachedReadingSelection)
+        || (clearEmptySelection && this.readingPointerInNote)) {
+        this.cachedReadingSelection = null;
+        this.hideReadingActions();
+      }
+      return;
+    }
+    this.cachedReadingSelection = null;
+    this.hideReadingActions();
     const editor = this.getActiveEditor();
     if (!editor) {
       this.cachedSelection = null;
@@ -347,12 +389,129 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
 
   // ───────────────────────── Modal entry point ──────────────────
 
+  private installActiveReadingButtons(): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const root = view ? this.getReadingRoot(view) : null;
+    if (root) this.installReadingButtons(root);
+  }
+
+  private installReadingButtons(element: HTMLElement): void {
+    const blocks = Array.from(element.querySelectorAll<HTMLElement>(READING_BLOCKS));
+    if (element.matches(READING_BLOCKS)) blocks.unshift(element);
+    for (const block of blocks) {
+      if (block.closest(".metadata-container,.frontmatter")) continue;
+      if (block.querySelector(".deepl-translate-block-action") || !blockContext(block)) continue;
+      // Nested paragraphs get their own action; do not duplicate it on a list
+      // item/table cell that contains paragraphs.
+      if (block.matches("li,td,th") && block.querySelector("p")) continue;
+      const button = block.ownerDocument.createElement("button");
+      button.className = "deepl-translate-block-action";
+      button.type = "button";
+      button.textContent = this.isChinese() ? "译" : "Tr";
+      button.title = this.isChinese() ? "翻译整个标题或段落" : "Translate this heading or paragraph";
+      button.setAttribute("aria-label", button.title);
+      button.addEventListener("pointerdown", (event) => event.stopPropagation());
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        const root = view ? this.getReadingRoot(view) : null;
+        const context = blockContext(block);
+        if (view && root?.contains(block) && context) {
+          void this.openSnapshot({ ...context, source: "reading", view, filePath: view.file?.path ?? null });
+        }
+      });
+      block.prepend(button);
+    }
+  }
+
+  private isChinese(): boolean {
+    return getLanguage().startsWith("zh");
+  }
+
+  private getReadingRoot(view: MarkdownView): HTMLElement | null {
+    return view.getMode?.() === "preview" ? view.previewMode?.containerEl ?? null : null;
+  }
+
+  private isReadingSnapshotValid(snapshot: ReadingSelectionSnapshot): boolean {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const root = view ? this.getReadingRoot(view) : null;
+    return view === snapshot.view && (view?.file?.path ?? null) === snapshot.filePath
+      && !!root?.contains(snapshot.block) && snapshot.block.isConnected
+      && renderedText(snapshot.block) === snapshot.blockText;
+  }
+
+  private hideReadingActions(): void {
+    this.readingActions?.remove();
+    this.readingActions = null;
+  }
+
+  private showReadingActions(): void {
+    if (this.readingActions || !this.cachedReadingSelection) return;
+    const doc = this.cachedReadingSelection.block.ownerDocument;
+    const actions = doc.createElement("div");
+    actions.className = "deepl-reading-actions";
+    actions.setAttribute("role", "toolbar");
+    actions.setAttribute("aria-label", this.isChinese() ? "翻译" : "Translate");
+    for (const [scope, label] of [
+      ["text", this.isChinese() ? "翻译选中" : "Selection"],
+      ["sentenceText", this.isChinese() ? "翻译整句" : "Sentence"],
+      ["paragraphText", this.isChinese() ? "翻译整段" : "Paragraph"],
+    ] as const) {
+      const button = doc.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      button.addEventListener("click", () => {
+        const snapshot = this.cachedReadingSelection;
+        if (snapshot && this.isReadingSnapshotValid(snapshot)) {
+          void this.openSnapshot({ ...snapshot, text: snapshot[scope] });
+        } else {
+          this.hideReadingActions();
+        }
+      });
+      actions.append(button);
+    }
+    doc.body.append(actions);
+    this.readingActions = actions;
+  }
+
+  private async openActiveTranslation(): Promise<void> {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const root = view ? this.getReadingRoot(view) : null;
+    if (view && root) {
+      const context = selectedReadingContext(root);
+      const snapshot: ReadingSelectionSnapshot | null = context
+        ? { ...context, source: "reading", view, filePath: view.file?.path ?? null }
+        : this.cachedReadingSelection;
+      if (snapshot && this.isReadingSnapshotValid(snapshot)) {
+        await this.openSnapshot(snapshot);
+      } else {
+        new Notice(this.isChinese() ? "长按选中文字，或点击标题/段落旁的“译”按钮。" : "Select text, or tap Tr beside a heading or paragraph.");
+      }
+      return;
+    }
+    const editor = this.getActiveEditor();
+    if (editor) await this.openTranslationModal(editor);
+    else new Notice("Open a note and select some text first.");
+  }
+
   async openTranslationModal(editor: Editor): Promise<void> {
     const resolvedSnapshot = this.buildSnapshot(editor);
     if (!resolvedSnapshot) {
       new Notice("Select some text first.");
       return;
     }
+
+    await this.openSnapshot(resolvedSnapshot);
+  }
+
+  private async openSnapshot(resolvedSnapshot: TranslationSnapshot): Promise<void> {
+    if (this.translationModalOpen) return;
+    if (resolvedSnapshot.source === "reading" && !this.isReadingSnapshotValid(resolvedSnapshot)) return;
 
     const activeApiKey = this.settings.translationProvider === "deepl"
       ? this.settings.apiKey.trim()
@@ -366,9 +525,20 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
 
     debugLog("Opening modal with text:", JSON.stringify(resolvedSnapshot.text.slice(0, 100)));
 
+    this.hideReadingActions();
+    this.cachedReadingSelection = null;
+
     const modal = new TranslationResultModal(this.app, this, resolvedSnapshot);
+    this.translationModalOpen = true;
     modal.open();
     await modal.translate();
+  }
+
+  onTranslationModalClosed(): void {
+    this.translationModalOpen = false;
+    this.cachedReadingSelection = null;
+    this.cachedSelection = null;
+    this.hideReadingActions();
   }
 
   /**
@@ -636,25 +806,20 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
 class TranslationResultModal extends Modal {
   private plugin: DeepLTranslateSelectionPlugin;
   // IMPORTANT: Do NOT name this "selection" — Modal parent class overwrites it in open().
-  private _snap: SelectionSnapshot;
+  private _snap: TranslationSnapshot;
   private sourceTextArea!: HTMLTextAreaElement;
   private translationTextArea!: HTMLTextAreaElement;
   private statusEl!: HTMLDivElement;
-  private insertButton!: HTMLButtonElement;
-  private replaceButton!: HTMLButtonElement;
+  private insertButton?: HTMLButtonElement;
+  private replaceButton?: HTMLButtonElement;
   private copyButton!: HTMLButtonElement;
   private translatedText = "";
 
-  constructor(app: App, plugin: DeepLTranslateSelectionPlugin, snap: SelectionSnapshot) {
+  constructor(app: App, plugin: DeepLTranslateSelectionPlugin, snap: TranslationSnapshot) {
     super(app);
     this.plugin = plugin;
-    this._snap = {
-      editor: snap.editor,
-      filePath: snap.filePath,
-      from: { ...snap.from },
-      to: { ...snap.to },
-      text: typeof snap.text === "string" ? snap.text : "",
-      source: snap.source,
+    this._snap = snap.source === "reading" ? { ...snap } : {
+      ...snap, from: { ...snap.from }, to: { ...snap.to },
     };
     debugLog("Modal constructor: _snap.text =", JSON.stringify(this._snap.text.slice(0, 80)));
   }
@@ -678,22 +843,24 @@ class TranslationResultModal extends Modal {
 
     const actions = this.contentEl.createDiv({ cls: "deepl-translate-actions" });
 
-    this.insertButton = actions.createEl("button", {
-      text: "Insert below",
-      cls: "mod-cta",
-    });
-    this.insertButton.disabled = true;
-    this.insertButton.addEventListener("click", () => {
-      this.insertBelow();
-    });
+    if (this._snap.source !== "reading") {
+      this.insertButton = actions.createEl("button", {
+        text: "Insert below",
+        cls: "mod-cta",
+      });
+      this.insertButton.disabled = true;
+      this.insertButton.addEventListener("click", () => {
+        this.insertBelow();
+      });
 
-    this.replaceButton = actions.createEl("button", {
-      text: "Replace selection",
-    });
-    this.replaceButton.disabled = true;
-    this.replaceButton.addEventListener("click", () => {
-      this.replaceSelection();
-    });
+      this.replaceButton = actions.createEl("button", {
+        text: "Replace selection",
+      });
+      this.replaceButton.disabled = true;
+      this.replaceButton.addEventListener("click", () => {
+        this.replaceSelection();
+      });
+    }
 
     this.copyButton = actions.createEl("button", {
       text: "Copy",
@@ -707,6 +874,11 @@ class TranslationResultModal extends Modal {
       text: "Cancel",
     });
     cancelButton.addEventListener("click", () => this.close());
+  }
+
+  onClose(): void {
+    this.plugin.onTranslationModalClosed();
+    this.contentEl.empty();
   }
 
   async translate(): Promise<void> {
@@ -744,12 +916,13 @@ class TranslationResultModal extends Modal {
   }
 
   private enableActions(): void {
-    this.insertButton.disabled = false;
-    this.replaceButton.disabled = false;
+    if (this.insertButton) this.insertButton.disabled = false;
+    if (this.replaceButton) this.replaceButton.disabled = false;
     this.copyButton.disabled = false;
   }
 
   private insertBelow(): void {
+    if (this._snap.source === "reading") return;
     if (!this.isSelectionUnchanged()) return;
     const insertion = `\n${this.translatedText}`;
     this._snap.editor.replaceRange(insertion, this._snap.to);
@@ -758,6 +931,7 @@ class TranslationResultModal extends Modal {
   }
 
   private replaceSelection(): void {
+    if (this._snap.source === "reading") return;
     if (!this.isSelectionUnchanged()) return;
     this._snap.editor.replaceRange(this.translatedText, this._snap.from, this._snap.to);
     new Notice("Replaced the selected text with the translation.");
@@ -793,6 +967,7 @@ class TranslationResultModal extends Modal {
   }
 
   private isSelectionUnchanged(): boolean {
+    if (this._snap.source === "reading") return false;
     if (this.plugin.isSnapshotValid(this._snap)) {
       return true;
     }
