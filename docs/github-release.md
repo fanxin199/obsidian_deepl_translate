@@ -8,6 +8,8 @@ Before a new release, update `manifest.json`, `package.json`, the root/package v
 
 The workflow requires GitHub Actions to be enabled in the repository. Its release job requests `contents: write`. Organization/repository policies must permit the pinned official `actions/checkout` and `actions/setup-node` actions and the requested token permission. Check failed runs in the repository's Actions tab; a pushed tag alone does not confirm publication.
 
+If a pushed tag does not create a workflow run (as observed with the cloud Git proxy during the initial 1.2.0 push), use Actions -> Test and release -> Run workflow on `main`, supplying the existing version tag. This runs tests and builds from the tag rather than from the current branch. The CLI equivalent is `gh workflow run release.yml --repo fanxin199/obsidian_deepl_translate --ref main -f version=1.2.0`. Check the run and the release attachments afterwards; this is a publishing action, not a read-only check.
+
 ## Permanently allow direct publishing from Codex cloud / 彻底解决云环境发布 API 拦截
 
 The observed `CONNECT tunnel failed, response 403` with `server: envoy` occurred before GitHub processed the API request. This is a cloud egress allowlist problem, distinct from GitHub repository permissions. Allowing only `github.com` or the package-manager preset does not allow all GitHub API hostnames.

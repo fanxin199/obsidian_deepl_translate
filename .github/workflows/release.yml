@@ -6,6 +6,12 @@ on:
     tags: ['*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing version tag to publish (for example 1.2.0)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.version) || github.ref }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
@@ -24,13 +32,17 @@ jobs:
       - run: npm test
 
   release:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.version) || github.ref }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
@@ -41,7 +53,7 @@ jobs:
           const fs = require('node:fs');
           const assert = require('node:assert/strict');
           const manifest = require('./manifest.json');
-          const version = process.env.GITHUB_REF_NAME;
+          const version = process.env.RELEASE_VERSION;
           assert.match(version, /^\d+\.\d+\.\d+$/);
           assert.equal(version, manifest.version);
           assert.ok(fs.existsSync(`.github/release-notes/${version}.md`));
@@ -50,14 +62,14 @@ jobs:
       - run: npm run build
       - name: Package release
         run: |
-          zip "deepl-translate-selection-${GITHUB_REF_NAME}.zip" main.js manifest.json styles.css
-          sha256sum main.js manifest.json styles.css "deepl-translate-selection-${GITHUB_REF_NAME}.zip" > SHA256SUMS
+          zip "deepl-translate-selection-${RELEASE_VERSION}.zip" main.js manifest.json styles.css
+          sha256sum main.js manifest.json styles.css "deepl-translate-selection-${RELEASE_VERSION}.zip" > SHA256SUMS
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_VERSION" \
             main.js manifest.json styles.css \
-            "deepl-translate-selection-${GITHUB_REF_NAME}.zip" SHA256SUMS \
-            --verify-tag --title "$GITHUB_REF_NAME — Windows and Android" \
-            --notes-file ".github/release-notes/${GITHUB_REF_NAME}.md"
+            "deepl-translate-selection-${RELEASE_VERSION}.zip" SHA256SUMS \
+            --verify-tag --title "$RELEASE_VERSION — Windows and Android" \
+            --notes-file ".github/release-notes/${RELEASE_VERSION}.md"
