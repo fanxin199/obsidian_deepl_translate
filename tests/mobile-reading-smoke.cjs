@@ -14,7 +14,7 @@ assert.ok(executablePath, 'Install Chrome/Chromium or set MOBILE_TEST_BROWSER to
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     const title = 'Neoantigen-driven B cell and CD4 T follicular helper cell collaboration promotes anti-tumor CD8 T cell responses';
-    await page.setContent(`<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body class="is-mobile"><header>文献笔记 · 阅读模式</header><main class="markdown-preview-view"><h1><span id="word">Neoantigen</span>${title.slice(10)}</h1><blockquote><p>Cui C, Wang J, Fagerberg E, ... Craft J, Joshi NS. Cell. 2021 Dec 9;184(25):6101-6118.e13.</p></blockquote><p>First sentence. <span id="second">Second</span> sentence has more words. Last sentence.</p></main></body></html>`);
+    await page.setContent(`<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body class="is-mobile"><header>文献笔记 · 阅读模式</header><main class="markdown-preview-view"><h1><span id="word">Neoantigen</span>${title.slice(10)}</h1><blockquote><p>Cui C, Wang J, Fagerberg E, ... Craft J, Joshi NS. Cell. 2021 Dec 9;184(25):6101-6118.e13.</p></blockquote><p>First sentence. <span id="second">Second</span> sentence has more words. Last sentence.</p><h2 id="zh-title">一句话总结</h2><p id="zh-summary">肿瘤表达新抗原，CD4 T 细胞分化为 TH1 和 TFH，产生 IL-21，提高 CD8 T 细胞的杀伤能力。</p><p id="zh-citation">文献信息经 PubMed 核实，全文自 PubMed Central 阅读。</p></main></body></html>`);
     await page.addStyleTag({ content: `:root { --text-muted:#777; --background-primary:white; --background-modifier-border:#ddd; --background-modifier-box-shadow:#0002; --text-normal:#222; } body {margin:20px; font:18px/1.5 system-ui; background:white;} header{font-size:14px;color:#888;} h1{font:bold 32px/1.22 Georgia;margin:24px 0;} blockquote{border-left:3px solid #9b7bdb;margin:18px 0;padding-left:16px;} button{border:1px solid #ccc;border-radius:8px;background:#fff;color:#222;} .modal{position:fixed;z-index:2000;inset:10vh 0 10px;box-sizing:border-box;overflow:auto;background:white;padding:16px;border:1px solid #aaa;border-radius:16px;box-shadow:0 0 0 100vmax #0005;} .modal h2{font-size:22px;} .modal button{padding:10px 20px;} ${fs.readFileSync(path.join(root, 'styles.css'), 'utf8')}` });
     await page.addScriptTag({ content: `
       window.requests = []; window.events = {}; window.cleanups = [];
@@ -42,6 +42,8 @@ assert.ok(executablePath, 'Install Chrome/Chromium or set MOBILE_TEST_BROWSER to
     ` });
     await page.addScriptTag({ content: fs.readFileSync(path.join(root, 'main.js'), 'utf8') });
     await page.evaluate(async () => { window.plugin = new module.exports.default(); await plugin.onload(); });
+    assert.equal(await page.locator('#zh-title .deepl-translate-block-action, #zh-summary .deepl-translate-block-action, #zh-citation .deepl-translate-block-action').count(), 0, 'Chinese blocks with Latin medical terms have no automatic button');
+    assert.equal(await page.evaluate(() => requests.length), 0);
     const headingButton = page.locator('h1 .deepl-translate-block-action');
     await headingButton.waitFor({ state: 'visible' });
     const bounds = await headingButton.boundingBox();
@@ -64,7 +66,7 @@ assert.ok(executablePath, 'Install Chrome/Chromium or set MOBILE_TEST_BROWSER to
     await page.waitForTimeout(100);
     assert.equal(await page.locator('.deepl-reading-actions').count(), 0);
     assert.deepEqual(errors, []);
-    console.log('Chromium mobile touch smoke passed: 44px targets, full heading tap, word-to-sentence translation, exact API text, read-only output, no obscuring toolbar or browser errors.');
+    console.log('Chromium mobile touch smoke passed: English-only buttons, 44px targets, full heading tap, word-to-sentence translation, exact API text, read-only output, no obscuring toolbar or browser errors.');
   } finally {
     await browser.close();
   }

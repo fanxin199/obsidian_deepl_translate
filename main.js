@@ -52,6 +52,9 @@ function blockContext(block) {
   const text = renderedText(block);
   return text ? { text, sentenceText: text, paragraphText: text, blockText: text, block } : null;
 }
+function isEnglishReadingText(text) {
+  return /[A-Za-z]/.test(text) && !/\p{Script=Han}/u.test(text);
+}
 function containingSentence(text, start, end) {
   if (typeof Intl.Segmenter !== "function") return text;
   const segments = new Intl.Segmenter(void 0, { granularity: "sentence" }).segment(text);
@@ -115,7 +118,7 @@ var DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaking
 5. For academic or technical content, use standard terminology in the target field.
 6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
 var DEBUG = false;
-var BUILD_ID = "v1.3.0";
+var BUILD_ID = "v1.3.1";
 function debugLog(...args) {
   if (DEBUG) {
     console.debug(`[DeepL Translate ${BUILD_ID}]`, ...args);
@@ -336,8 +339,13 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     if (element.matches(READING_BLOCKS)) blocks.unshift(element);
     for (const block of blocks) {
       if (block.closest(".metadata-container,.frontmatter")) continue;
-      if (block.querySelector(".deepl-translate-block-action") || !blockContext(block)) continue;
       if (block.matches("li,td,th") && block.querySelector("p")) continue;
+      const existingButton = Array.from(block.children).find((child) => child.matches(".deepl-translate-block-action"));
+      if (!isEnglishReadingText(renderedText(block))) {
+        existingButton?.remove();
+        continue;
+      }
+      if (existingButton) continue;
       const button = block.ownerDocument.createElement("button");
       button.className = "deepl-translate-block-action";
       button.type = "button";
@@ -351,7 +359,7 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
         const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
         const root = view ? this.getReadingRoot(view) : null;
         const context = blockContext(block);
-        if (view && root?.contains(block) && context) {
+        if (view && root?.contains(block) && context && isEnglishReadingText(context.text)) {
           void this.openSnapshot({ ...context, source: "reading", view, filePath: view.file?.path ?? null });
         }
       });

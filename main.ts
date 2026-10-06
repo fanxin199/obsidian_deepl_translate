@@ -15,7 +15,7 @@ import {
 } from "obsidian";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import {
-  READING_BLOCKS, blockContext, renderedText, selectedReadingContext,
+  READING_BLOCKS, blockContext, isEnglishReadingText, renderedText, selectedReadingContext,
   ReadingSelectionSnapshot,
 } from "./reading-selection";
 
@@ -103,7 +103,7 @@ const DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaki
 6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
 
 const DEBUG = false;
-const BUILD_ID = "v1.3.0";
+const BUILD_ID = "v1.3.1";
 
 function debugLog(...args: unknown[]): void {
   if (DEBUG) {
@@ -400,10 +400,16 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
     if (element.matches(READING_BLOCKS)) blocks.unshift(element);
     for (const block of blocks) {
       if (block.closest(".metadata-container,.frontmatter")) continue;
-      if (block.querySelector(".deepl-translate-block-action") || !blockContext(block)) continue;
       // Nested paragraphs get their own action; do not duplicate it on a list
       // item/table cell that contains paragraphs.
       if (block.matches("li,td,th") && block.querySelector("p")) continue;
+      const existingButton = Array.from(block.children)
+        .find((child) => child.matches(".deepl-translate-block-action"));
+      if (!isEnglishReadingText(renderedText(block))) {
+        existingButton?.remove();
+        continue;
+      }
+      if (existingButton) continue;
       const button = block.ownerDocument.createElement("button");
       button.className = "deepl-translate-block-action";
       button.type = "button";
@@ -417,7 +423,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         const root = view ? this.getReadingRoot(view) : null;
         const context = blockContext(block);
-        if (view && root?.contains(block) && context) {
+        if (view && root?.contains(block) && context && isEnglishReadingText(context.text)) {
           void this.openSnapshot({ ...context, source: "reading", view, filePath: view.file?.path ?? null });
         }
       });

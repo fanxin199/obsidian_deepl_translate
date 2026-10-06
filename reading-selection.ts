@@ -44,6 +44,13 @@ export function blockContext(block: HTMLElement): ReadingTextContext | null {
   return text ? { text, sentenceText: text, paragraphText: text, blockText: text, block } : null;
 }
 
+// Keep automatic buttons on English text. Chinese prose often contains Latin
+// medical terms (CD4, IL-21, PubMed); those must not make it look English.
+// Mixed Chinese/English blocks remain accessible through manual selection.
+export function isEnglishReadingText(text: string): boolean {
+  return /[A-Za-z]/.test(text) && !/\p{Script=Han}/u.test(text);
+}
+
 function containingSentence(text: string, start: number, end: number): string {
   if (typeof Intl.Segmenter !== "function") return text;
   const segments = new Intl.Segmenter(undefined, { granularity: "sentence" }).segment(text);

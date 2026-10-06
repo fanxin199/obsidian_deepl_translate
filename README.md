@@ -6,7 +6,7 @@
 
 ## English
 
-DeepL Translate Selection is an [Obsidian](https://obsidian.md) plugin that translates selected text with the [DeepL API](https://www.deepl.com/pro-api) or [DeepSeek](https://platform.deepseek.com) (OpenAI-compatible LLM). Version 1.3.0 supports reading and editing modes on Windows desktop and Android mobile with Obsidian 1.5.0 or later. In reading mode, tap Tr beside a heading or paragraph to translate it without selecting text. After selecting a word, the plugin also offers Sentence and Paragraph actions.
+DeepL Translate Selection is an [Obsidian](https://obsidian.md) plugin that translates selected text with the [DeepL API](https://www.deepl.com/pro-api) or [DeepSeek](https://platform.deepseek.com) (OpenAI-compatible LLM). Version 1.3.1 supports reading and editing modes on Windows desktop and Android mobile with Obsidian 1.5.0 or later. In reading mode, tap Tr beside a heading or paragraph to translate it without selecting text. Automatic Tr buttons appear only on blocks containing English letters and no Chinese characters; Chinese paragraphs with terms such as CD4, IL-21 or PubMed stay uncluttered. Mixed Chinese/English paragraphs can still be translated through manual selection. After selecting a word, the plugin also offers Sentence and Paragraph actions.
 
 ### Features
 
@@ -64,7 +64,7 @@ The default model is `deepseek-v4-flash`. You can change it or point the base UR
 
 ### Android usage
 
-1. Update to **1.3.0** and enable the plugin. Existing API keys and settings are preserved.
+1. Update to **1.3.1** and enable the plugin. Existing API keys and settings are preserved.
 2. Open a note in **reading mode**. Tap **Tr** beside a heading or paragraph to translate its entire text, without dragging Android selection handles.
 3. To translate just a sentence, long-press any word in it, then tap **Sentence** in the plugin's floating toolbar. **Selection** translates exactly the highlighted text; **Paragraph** translates the whole paragraph. Android's native Copy/Select All menu is separate from this toolbar.
 4. Review and copy the translation. Reading-mode translation does not modify the note. If Android blocks automatic clipboard access, long-press the translated text and use the system Copy action.
@@ -102,7 +102,7 @@ For more details, see [PRIVACY.md](./PRIVACY.md).
 
 ## 中文
 
-DeepL Translate Selection 是一款 [Obsidian](https://obsidian.md) 插件，用于通过 [DeepL API](https://www.deepl.com/pro-api) 或 [DeepSeek](https://platform.deepseek.com)（OpenAI 兼容 LLM）翻译笔记内容。1.3.0 版本支持 Windows 和 Android 的阅读与编辑模式，需要 Obsidian 1.5.0 或更高版本。阅读模式下直接点击标题或段落旁的“译”，即可翻译完整内容，无须拖动手机选区；选中一个单词后，也可以选择“翻译整句”或“翻译整段”。
+DeepL Translate Selection 是一款 [Obsidian](https://obsidian.md) 插件，用于通过 [DeepL API](https://www.deepl.com/pro-api) 或 [DeepSeek](https://platform.deepseek.com)（OpenAI 兼容 LLM）翻译笔记内容。1.3.1 版本支持 Windows 和 Android 的阅读与编辑模式，需要 Obsidian 1.5.0 或更高版本。阅读模式下直接点击标题或段落旁的“译”，即可翻译完整内容，无须拖动手机选区。自动“译”按钮只出现在含英文、不含中文的文本块旁；中文段落即使含 CD4、IL-21、PubMed 等术语也不会显示按钮。中英混合段落仍可手动选中翻译；选中一个单词后，也可以选择“翻译整句”或“翻译整段”。
 
 ### 核心功能
 
@@ -160,7 +160,7 @@ DeepL Translate Selection 是一款 [Obsidian](https://obsidian.md) 插件，用
 
 ### Android 手机使用
 
-1. 将插件更新到 **1.3.0** 并启用，已有 API key 和设置会保留。
+1. 将插件更新到 **1.3.1** 并启用，已有 API key 和设置会保留。
 2. 打开笔记的**阅读模式**，点击标题或段落旁的 **“译”**，即可翻译整个标题或段落，无须拖动手机的选择手柄。
 3. 如果只想翻译一句话，长按这句话里的任意单词，然后点击插件浮动工具栏中的 **“翻译整句”**。“翻译选中”仅翻译高亮部分，“翻译整段”翻译整个段落。安卓系统的“复制、全选”菜单和插件工具栏是两个独立入口。
 4. 查看并复制译文。阅读模式下不会修改笔记。如果 Android 拒绝自动复制，可以长按译文，使用系统的复制操作。

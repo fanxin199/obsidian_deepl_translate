@@ -177,6 +177,54 @@ test('screenshot scenario: tapping 译 translates the full wrapped scientific he
   dom.window.close();
 });
 
+test('automatic reading buttons stay on English blocks and exclude Chinese medical prose', async () => {
+  const { h, dom, root } = await readingFixture(`
+    <h1 id="english-heading">Neoantigen-driven B cell and CD4 T cell responses</h1>
+    <p id="english">English <em>sentences</em> remain easy to translate.</p>
+    <h2 id="chinese-heading">一句话总结</h2>
+    <p id="chinese">肿瘤若表达能被 B 细胞受体识别的新抗原，CD4 T 细胞分化为 TH1 和 TFH，并产生 IL-21，提高 CD8 T 细胞的杀伤能力。</p>
+    <p id="citation">文献信息经 PubMed 核实；全文自 PubMed Central 开放获取版本阅读。</p>
+    <p id="mixed">English text with 中文注释.</p>
+    <p id="numbers">2021 / 184(25):6101–6118</p>`);
+  for (const id of ['english-heading', 'english']) {
+    assert.ok(root.querySelector(`#${id} .deepl-translate-block-action`), id);
+  }
+  for (const id of ['chinese-heading', 'chinese', 'citation', 'mixed', 'numbers']) {
+    assert.equal(root.querySelector(`#${id} .deepl-translate-block-action`), null, id);
+  }
+  assert.equal(h.requests.length, 0);
+  dom.window.close();
+});
+
+test('reading buttons follow language changes without duplicates or stale Chinese actions', async () => {
+  const { h, dom, root } = await readingFixture('<p><span>English paragraph.</span></p>');
+  const block = root.querySelector('p');
+  const span = block.querySelector('span');
+  const update = () => h.postProcessors.forEach((callback) => callback(root, {}));
+  assert.equal(block.querySelectorAll('.deepl-translate-block-action').length, 1);
+  span.textContent = 'CD4 T 细胞的中文描述。';
+  // A stale button cannot send Chinese text even before the render update.
+  block.querySelector('.deepl-translate-block-action').click();
+  assert.equal(h.requests.length, 0);
+  update();
+  assert.equal(block.querySelector('.deepl-translate-block-action'), null);
+  span.textContent = 'English paragraph again.';
+  update(); update();
+  assert.equal(block.querySelectorAll('.deepl-translate-block-action').length, 1);
+  block.querySelector('.deepl-translate-block-action').click();
+  await new Promise(setImmediate);
+  assert.equal(new URLSearchParams(h.requests[0].body).get('text'), 'English paragraph again.');
+  assert.equal(new URLSearchParams(h.requests[0].body).get('target_lang'), 'ZH');
+  dom.window.close();
+});
+
+test('English button filtering uses visible text rather than hidden labels or markup', async () => {
+  const { dom, root } = await readingFixture('<p id="english">Visible English text.<span aria-hidden="true">隐藏的中文</span></p><p id="chinese">中文内容。<span aria-hidden="true">Hidden English</span></p>');
+  assert.ok(root.querySelector('#english .deepl-translate-block-action'));
+  assert.equal(root.querySelector('#chinese .deepl-translate-block-action'), null);
+  dom.window.close();
+});
+
 test('a paragraph button also works with no native selection at all', async () => {
   const { h, dom, root } = await readingFixture('<p>Translate this entire paragraph without a long press.</p>');
   assert.equal(h.requests.length, 0);
