@@ -13,6 +13,10 @@ function makeEditor(value = 'Hello world', from = 0, to = 5) {
     offset(pos) {
       return this.value.split('\n').slice(0, pos.line).reduce((sum, line) => sum + line.length + 1, 0) + pos.ch;
     },
+    offsetToPos(offset) {
+      const lines = this.value.slice(0, offset).split('\n');
+      return { line: lines.length - 1, ch: lines.at(-1).length };
+    },
     getCursor(side) { return { ...(side === 'from' ? this.from : this.to) }; },
     getRange(start, end) { return this.value.slice(this.offset(start), this.offset(end)); },
     getSelection() { return this.getRange(this.from, this.to); },
@@ -26,7 +30,8 @@ function makeEditor(value = 'Hello world', from = 0, to = 5) {
 }
 
 async function loadPlugin(editor = makeEditor(), settings = {}) {
-  const h = { editor, notices: [], commands: [], requests: [], events: new Map(), workspaceEvents: new Map(), pending: new Map(), cleanups: [], copyCalls: [], clipboard: [] };
+  const infoField = require('@codemirror/state').StateField.define({ create: () => ({ editor }), update: (value) => value });
+  const h = { editor, notices: [], commands: [], requests: [], events: new Map(), workspaceEvents: new Map(), pending: new Map(), cleanups: [], copyCalls: [], clipboard: [], extensions: [], infoField };
   h.doc = { activeElement: null, execCommand(command) { h.copyCalls.push(command); return h.copyResult ?? true; } };
   class Element {
     constructor(options = {}) { this.children = []; this.events = new Map(); this.classes = new Set(); this.ownerDocument = h.doc; this.value = ''; Object.assign(this, options); }
@@ -55,6 +60,7 @@ async function loadPlugin(editor = makeEditor(), settings = {}) {
     addRibbonIcon(icon, title, callback) { h.ribbon = { icon, title, callback }; return new Element(); }
     registerDomEvent(target, event, callback, options) { h.events.set(event, { callback, options }); }
     registerEvent() {}
+    registerEditorExtension(extension) { h.extensions.push(extension); }
     register(callback) { h.cleanups.push(callback); }
   }
   class Modal {
@@ -77,9 +83,11 @@ async function loadPlugin(editor = makeEditor(), settings = {}) {
     },
     URLSearchParams, console,
     require(id) {
+      if (id === '@codemirror/view') return require(id);
       assert.equal(id, 'obsidian', 'the mobile bundle must not require Node.js or Electron');
       return {
         Plugin, Modal, PluginSettingTab: class {}, MarkdownView: class {},
+        editorInfoField: h.infoField,
         Notice: class { constructor(message) { h.notices.push(message); } },
         async requestUrl(request) {
           h.requests.push(request);
@@ -97,6 +105,17 @@ async function loadPlugin(editor = makeEditor(), settings = {}) {
   h.flushCapture = () => { for (const [id, callback] of h.pending) { h.pending.delete(id); callback(); } };
   h.runCommand = () => h.commands[0].editorCallback(editor);
   h.open = () => h.plugin.openTranslationModal(editor);
+  h.attachNativeSelection = (start, end, targetEditor = editor) => {
+    const startNode = {}; const endNode = {};
+    h.nativeRange = { startContainer: startNode, startOffset: start, endContainer: endNode, endOffset: end };
+    h.doc.getSelection = () => h.nativeRange ? { isCollapsed: false, rangeCount: 1, getRangeAt: () => h.nativeRange } : null;
+    h.view = {
+      contentDOM: { ownerDocument: h.doc, contains: (node) => node === startNode || node === endNode },
+      state: { field: (field) => { assert.equal(field, h.infoField); return { editor: targetEditor }; } },
+      posAtDOM(node, offset) { return offset; },
+    };
+    h.viewPlugin = h.extensions[0].create(h.view);
+  };
   return h;
 }
 
@@ -142,6 +161,187 @@ test('Windows right-click retains the pre-captured selection after the menu coll
   assert.equal(h.modal.sourceTextArea.value, 'Hello');
   await new Promise(setImmediate);
   assert.equal(h.modal.translationTextArea.value, '你好');
+});
+
+test('Android menu uses the expanded paragraph when selection handles move after the menu opens', async () => {
+  const h = await loadPlugin();
+  let click;
+  const item = { setTitle() { return this; }, setIcon() { return this; }, onClick(callback) { click = callback; } };
+  h.workspaceEvents.get('editor-menu')({ addItem(callback) { callback(item); } }, h.editor);
+  h.editor.to.ch = h.editor.value.length;
+  click();
+  assert.equal(h.modal.sourceTextArea.value, 'Hello world');
+  await new Promise(setImmediate);
+  assert.equal(new URLSearchParams(h.requests[0].body).get('text'), 'Hello world');
+});
+
+test('Android command palette reads the full native handle range even when the API still selects the initial word', async () => {
+  const h = await loadPlugin();
+  h.attachNativeSelection(0, h.editor.value.length);
+  h.dispatch('selectionchange'); h.flushCapture();
+  h.dispatch('pointerdown');
+  h.nativeRange = null; h.editor.focused = false;
+  h.dispatch('selectionchange'); h.flushCapture();
+  h.runCommand();
+  assert.equal(h.modal.sourceTextArea.value, 'Hello world');
+  await new Promise(setImmediate);
+  assert.equal(new URLSearchParams(h.requests[0].body).get('text'), 'Hello world');
+  h.modal.replaceSelection();
+  assert.equal(h.editor.value, '你好');
+});
+
+test('opening the command palette without a pointer event also retains the expanded native selection', async () => {
+  const h = await loadPlugin();
+  h.attachNativeSelection(0, h.editor.value.length);
+  h.dispatch('selectionchange'); h.flushCapture();
+  h.nativeRange = null; h.editor.focused = false;
+  h.dispatch('selectionchange'); h.flushCapture();
+  h.runCommand();
+  assert.equal(h.modal.sourceTextArea.value, 'Hello world');
+  await new Promise(setImmediate);
+});
+
+test('native handle updates take effect synchronously at command invocation', async () => {
+  const h = await loadPlugin();
+  h.attachNativeSelection(0, 5);
+  h.dispatch('selectionchange'); h.flushCapture();
+  h.nativeRange.endOffset = 11;
+  h.runCommand();
+  assert.equal(h.modal.sourceTextArea.value, 'Hello world');
+  await new Promise(setImmediate);
+});
+
+test('shrinking a native selection to one word overrides the previous paragraph cache', async () => {
+  const h = await loadPlugin();
+  h.attachNativeSelection(0, 11);
+  h.dispatch('pointerdown'); h.nativeRange.endOffset = 5;
+  assert.equal(h.plugin.buildSnapshot(h.editor).text, 'Hello');
+});
+
+test('native selection mappings preserve reverse and multiline source positions', async () => {
+  const editor = makeEditor('First\nSecond\nThird');
+  const h = await loadPlugin(editor);
+  h.attachNativeSelection(9, 2);
+  const snapshot = h.plugin.buildSnapshot(editor);
+  assert.equal(snapshot.text, 'rst\nSec');
+  assert.equal(snapshot.from.line, 0); assert.equal(snapshot.from.ch, 2);
+  assert.equal(snapshot.to.line, 1); assert.equal(snapshot.to.ch, 3);
+});
+
+test('a DOM selection outside the editor or in another note cannot override its API selection', async () => {
+  const h = await loadPlugin();
+  h.attachNativeSelection(0, 11);
+  h.nativeRange.endContainer = {};
+  assert.equal(h.plugin.buildSnapshot(h.editor).text, 'Hello');
+  h.attachNativeSelection(0, 11, makeEditor('Other note'));
+  assert.equal(h.plugin.buildSnapshot(h.editor).text, 'Hello');
+});
+
+test('unsupported DOM nodes fall back to source positions without searching for matching words', async () => {
+  const h = await loadPlugin();
+  h.attachNativeSelection(0, 11);
+  h.view.posAtDOM = () => { throw new Error('Detached node'); };
+  assert.equal(h.plugin.buildSnapshot(h.editor).text, 'Hello');
+});
+
+test('CodeMirror selection updates schedule a capture and removed views are no longer read', async () => {
+  const h = await loadPlugin();
+  h.attachNativeSelection(0, 11);
+  h.viewPlugin.update({ selectionSet: true, docChanged: false });
+  assert.equal(h.pending.size, 1);
+  h.flushCapture();
+  assert.equal(h.plugin.cachedSelection.text, 'Hello world');
+  h.viewPlugin.destroy();
+  h.plugin.cachedSelection = null;
+  assert.equal(h.plugin.buildSnapshot(h.editor).text, 'Hello');
+});
+
+test('editing the note invalidates a larger native cache while the command palette is open', async () => {
+  const h = await loadPlugin();
+  h.attachNativeSelection(0, 11); h.dispatch('pointerdown');
+  h.nativeRange = null; h.editor.value = 'Other words'; h.editor.focused = false;
+  assert.equal(h.plugin.buildSnapshot(h.editor).text, 'Other');
+});
+
+test('real CodeMirror DOM mapping translates the expanded native paragraph after command-palette focus loss', async () => {
+  const { JSDOM } = require('jsdom');
+  const { EditorState } = require('@codemirror/state');
+  const { EditorView } = require('@codemirror/view');
+  const dom = new JSDOM('<main></main><div id="palette">Translate selection</div>', { pretendToBeVisual: true });
+  const globals = {
+    window: dom.window, document: dom.window.document, MutationObserver: dom.window.MutationObserver,
+    requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
+    cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
+  };
+  const descriptors = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  let view;
+  try {
+    for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    const h = await loadPlugin();
+    view = new EditorView({
+      state: EditorState.create({ doc: h.editor.value, extensions: [h.infoField, ...h.extensions] }),
+      parent: dom.window.document.querySelector('main'),
+    });
+    const text = view.contentDOM.querySelector('.cm-line').firstChild;
+    const range = dom.window.document.createRange();
+    range.setStart(text, 0); range.setEnd(text, 11);
+    const selection = dom.window.getSelection();
+    selection.removeAllRanges(); selection.addRange(range);
+    h.dispatch('selectionchange'); h.flushCapture();
+    assert.equal(h.plugin.cachedSelection.text, 'Hello world');
+    assert.equal(h.editor.getSelection(), 'Hello', 'Obsidian API intentionally lags behind native handles');
+    const paletteRange = dom.window.document.createRange();
+    paletteRange.selectNodeContents(dom.window.document.querySelector('#palette'));
+    selection.removeAllRanges(); selection.addRange(paletteRange);
+    h.editor.focused = false;
+    h.runCommand();
+    assert.equal(h.modal.sourceTextArea.value, 'Hello world');
+    await new Promise(setImmediate);
+    assert.equal(new URLSearchParams(h.requests[0].body).get('text'), 'Hello world');
+    h.modal.replaceSelection();
+    assert.equal(h.editor.value, '你好');
+  } finally {
+    view?.destroy(); dom.window.close();
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  }
+});
+
+test('real DOM mapping locates the selected occurrence and multiline offsets without matching text searches', async () => {
+  const { JSDOM } = require('jsdom');
+  const { EditorState } = require('@codemirror/state');
+  const { EditorView } = require('@codemirror/view');
+  const dom = new JSDOM('<main></main>', { pretendToBeVisual: true });
+  const globals = { window: dom.window, document: dom.window.document, MutationObserver: dom.window.MutationObserver };
+  const descriptors = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  let view;
+  try {
+    for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    const editor = makeEditor('Hello world\nHello world\nThird line');
+    const h = await loadPlugin(editor);
+    view = new EditorView({ state: EditorState.create({ doc: editor.value, extensions: [h.infoField, ...h.extensions] }), parent: dom.window.document.querySelector('main') });
+    const lines = view.contentDOM.querySelectorAll('.cm-line');
+    const range = dom.window.document.createRange();
+    range.setStart(lines[1].firstChild, 0); range.setEnd(lines[1].firstChild, 11);
+    const selection = dom.window.getSelection();
+    selection.removeAllRanges(); selection.addRange(range);
+    const snapshot = h.plugin.buildSnapshot(editor);
+    assert.equal(snapshot.text, 'Hello world'); assert.equal(snapshot.from.line, 1); assert.equal(snapshot.to.line, 1);
+    range.setStart(lines[1].firstChild, 6); range.setEnd(lines[2].firstChild, 5);
+    selection.removeAllRanges(); selection.addRange(range);
+    const multiline = h.plugin.buildSnapshot(editor);
+    assert.equal(multiline.text, 'world\nThird');
+    assert.equal(multiline.from.line, 1); assert.equal(multiline.from.ch, 6);
+    assert.equal(multiline.to.line, 2); assert.equal(multiline.to.ch, 5);
+  } finally {
+    view?.destroy(); dom.window.close();
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  }
 });
 
 test('touching the mobile toolbar preserves a collapsed selection even if the editor keeps focus', async () => {

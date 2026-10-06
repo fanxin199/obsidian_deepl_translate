@@ -24,6 +24,7 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
+var import_view = require("@codemirror/view");
 var DEFAULT_SETTINGS = {
   translationProvider: "deepl",
   apiKey: "",
@@ -51,7 +52,7 @@ var DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaking
 5. For academic or technical content, use standard terminology in the target field.
 6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
 var DEBUG = false;
-var BUILD_ID = "v1.2.0";
+var BUILD_ID = "v1.2.1";
 function debugLog(...args) {
   if (DEBUG) {
     console.debug(`[DeepL Translate ${BUILD_ID}]`, ...args);
@@ -83,6 +84,7 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     // Keep positions and editor identity together when a toolbar or menu takes focus.
     this.cachedSelection = null;
     this.preserveSelectionForUI = false;
+    this.editorViews = /* @__PURE__ */ new Set();
   }
   async onload() {
     await this.loadSettings();
@@ -109,6 +111,19 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
         this.captureCurrentSelection("selection change", true);
       }, 0);
     };
+    const plugin = this;
+    this.registerEditorExtension(import_view.ViewPlugin.fromClass(class {
+      constructor(view) {
+        this.view = view;
+        plugin.editorViews.add(view);
+      }
+      update(update) {
+        if (update.selectionSet || update.docChanged) scheduleCapture();
+      }
+      destroy() {
+        plugin.editorViews.delete(this.view);
+      }
+    }));
     this.registerDomEvent(document, "selectionchange", scheduleCapture);
     this.registerDomEvent(document, "pointerup", scheduleCapture);
     this.registerDomEvent(document, "keyup", scheduleCapture);
@@ -135,9 +150,11 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
           debugLog("No text found \u2192 menu item not added");
           return;
         }
+        this.cachedSelection = snapshot;
+        this.preserveSelectionForUI = true;
         menu.addItem((item) => {
           item.setTitle("Translate").setIcon("languages").onClick(() => {
-            void this.openTranslationModal(editor, snapshot);
+            void this.openTranslationModal(editor);
           });
         });
       })
@@ -154,7 +171,41 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
       return null;
     }
     const text = sanitizeText(editor.getRange(from, to));
-    return text ? { editor, filePath: this.getEditorFilePath(editor), from, to, text } : null;
+    return text ? { editor, filePath: this.getEditorFilePath(editor), from, to, text, source: "editor" } : null;
+  }
+  readNativeSelection(editor) {
+    for (const view of this.editorViews) {
+      if (view.state.field(import_obsidian.editorInfoField, false)?.editor !== editor) continue;
+      const selection = view.contentDOM.ownerDocument.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount !== 1) continue;
+      const range = selection.getRangeAt(0);
+      if (!view.contentDOM.contains(range.startContainer) || !view.contentDOM.contains(range.endContainer)) continue;
+      try {
+        const start = view.posAtDOM(range.startContainer, range.startOffset);
+        const end = view.posAtDOM(range.endContainer, range.endOffset);
+        const from = editor.offsetToPos(Math.min(start, end));
+        const to = editor.offsetToPos(Math.max(start, end));
+        const text = sanitizeText(editor.getRange(from, to));
+        if (text) {
+          return { editor, filePath: this.getEditorFilePath(editor), from, to, text, source: "native" };
+        }
+      } catch {
+      }
+    }
+    return null;
+  }
+  readCurrentSelection(editor) {
+    const native = this.readNativeSelection(editor);
+    if (native) return native;
+    const live = this.readEditorSelection(editor);
+    const cached = this.cachedSelection;
+    if (live && (this.preserveSelectionForUI || !editor.hasFocus()) && cached?.source === "native" && this.isSnapshotValid(cached)) {
+      const beforeOrEqual = (a, b) => a.line < b.line || a.line === b.line && a.ch <= b.ch;
+      if (beforeOrEqual(cached.from, live.from) && beforeOrEqual(live.to, cached.to)) {
+        return cached;
+      }
+    }
+    return live;
   }
   getEditorFilePath(editor) {
     const active = this.app.workspace.activeEditor;
@@ -171,7 +222,7 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
       this.cachedSelection = null;
       return;
     }
-    const snapshot = this.readEditorSelection(editor);
+    const snapshot = this.readCurrentSelection(editor);
     if (snapshot) {
       this.cachedSelection = snapshot;
       debugLog(`captureCurrentSelection(${source}): cached editor range`);
@@ -180,8 +231,8 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     }
   }
   // ───────────────────────── Modal entry point ──────────────────
-  async openTranslationModal(editor, snapshot) {
-    const resolvedSnapshot = snapshot ?? this.buildSnapshot(editor);
+  async openTranslationModal(editor) {
+    const resolvedSnapshot = this.buildSnapshot(editor);
     if (!resolvedSnapshot) {
       new import_obsidian.Notice("Select some text first.");
       return;
@@ -202,7 +253,7 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
    * (where no snapshot is pre-built by the menu handler).
    */
   buildSnapshot(editor) {
-    const live = this.readEditorSelection(editor);
+    const live = this.readCurrentSelection(editor);
     const cached = this.cachedSelection;
     this.cachedSelection = null;
     this.preserveSelectionForUI = false;
@@ -416,7 +467,8 @@ var TranslationResultModal = class extends import_obsidian.Modal {
       filePath: snap.filePath,
       from: { ...snap.from },
       to: { ...snap.to },
-      text: typeof snap.text === "string" ? snap.text : ""
+      text: typeof snap.text === "string" ? snap.text : "",
+      source: snap.source
     };
     debugLog("Modal constructor: _snap.text =", JSON.stringify(this._snap.text.slice(0, 80)));
   }

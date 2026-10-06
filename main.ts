@@ -9,8 +9,10 @@ import {
   PluginSettingTab,
   RequestUrlResponse,
   Setting,
+  editorInfoField,
   requestUrl,
 } from "obsidian";
+import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 
 type TargetLang = "ZH" | "EN-US";
 type ModelType = "quality_optimized";
@@ -62,6 +64,7 @@ interface SelectionSnapshot {
   from: EditorPosition;
   to: EditorPosition;
   text: string;
+  source: "editor" | "native";
 }
 
 const DEFAULT_SETTINGS: DeepLTranslateSettings = {
@@ -93,7 +96,7 @@ const DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaki
 6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
 
 const DEBUG = false;
-const BUILD_ID = "v1.2.0";
+const BUILD_ID = "v1.2.1";
 
 function debugLog(...args: unknown[]): void {
   if (DEBUG) {
@@ -145,6 +148,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
   private cachedSelection: SelectionSnapshot | null = null;
   private preserveSelectionForUI = false;
   private selectionCaptureTimer: number | undefined;
+  private editorViews = new Set<EditorView>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -180,6 +184,18 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
         this.captureCurrentSelection("selection change", true);
       }, 0);
     };
+    const plugin = this;
+    this.registerEditorExtension(ViewPlugin.fromClass(class {
+      constructor(readonly view: EditorView) {
+        plugin.editorViews.add(view);
+      }
+      update(update: ViewUpdate): void {
+        if (update.selectionSet || update.docChanged) scheduleCapture();
+      }
+      destroy(): void {
+        plugin.editorViews.delete(this.view);
+      }
+    }));
     this.registerDomEvent(document, "selectionchange", scheduleCapture);
     this.registerDomEvent(document, "pointerup", scheduleCapture);
     this.registerDomEvent(document, "keyup", scheduleCapture);
@@ -212,12 +228,18 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
           return;
         }
 
+        // Android opens the menu on the initial word, before selection handles
+        // finish expanding the range. Retain it only as a fallback, not a frozen
+        // argument to the menu callback, and keep tracking subsequent changes.
+        this.cachedSelection = snapshot;
+        this.preserveSelectionForUI = true;
+
         menu.addItem((item) => {
           item
             .setTitle("Translate")
             .setIcon("languages")
             .onClick(() => {
-              void this.openTranslationModal(editor, snapshot);
+              void this.openTranslationModal(editor);
             });
         });
       }),
@@ -241,7 +263,55 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
     // Use the editor range, not window.getSelection(): DOM selection can belong
     // to a dialog or settings field and has no reliable note coordinates.
     const text = sanitizeText(editor.getRange(from, to));
-    return text ? { editor, filePath: this.getEditorFilePath(editor), from, to, text } : null;
+    return text ? { editor, filePath: this.getEditorFilePath(editor), from, to, text, source: "editor" } : null;
+  }
+
+  private readNativeSelection(editor: Editor): SelectionSnapshot | null {
+    for (const view of this.editorViews) {
+      if (view.state.field(editorInfoField, false)?.editor !== editor) continue;
+      const selection = view.contentDOM.ownerDocument.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount !== 1) continue;
+      const range = selection.getRangeAt(0);
+      // Never accept selections from settings, dialogs, or a different editor.
+      if (!view.contentDOM.contains(range.startContainer)
+        || !view.contentDOM.contains(range.endContainer)) continue;
+      try {
+        // Android's native handles can move before CodeMirror commits selection
+        // state. Convert the visible DOM range to exact note offsets using its
+        // registered editor view, including reversed and multiline selections.
+        const start = view.posAtDOM(range.startContainer, range.startOffset);
+        const end = view.posAtDOM(range.endContainer, range.endOffset);
+        const from = editor.offsetToPos(Math.min(start, end));
+        const to = editor.offsetToPos(Math.max(start, end));
+        const text = sanitizeText(editor.getRange(from, to));
+        if (text) {
+          return { editor, filePath: this.getEditorFilePath(editor), from, to, text, source: "native" };
+        }
+      } catch {
+        // An unmounted/widget DOM node cannot provide reliable source positions.
+        // Fall back to the editor selection without guessing from a text search.
+      }
+    }
+    return null;
+  }
+
+  private readCurrentSelection(editor: Editor): SelectionSnapshot | null {
+    const native = this.readNativeSelection(editor);
+    if (native) return native;
+    const live = this.readEditorSelection(editor);
+    const cached = this.cachedSelection;
+    if (live && (this.preserveSelectionForUI || !editor.hasFocus()) && cached?.source === "native"
+      && this.isSnapshotValid(cached)) {
+      const beforeOrEqual = (a: EditorPosition, b: EditorPosition) =>
+        a.line < b.line || (a.line === b.line && a.ch <= b.ch);
+      if (beforeOrEqual(cached.from, live.from) && beforeOrEqual(live.to, cached.to)) {
+        // Once UI takes focus, the API may still report the initial word. Do not
+        // overwrite a newer native range with that stale subset. A new native
+        // selection or a pointer action inside the note always takes precedence.
+        return cached;
+      }
+    }
+    return live;
   }
 
   private getEditorFilePath(editor: Editor): string | null {
@@ -263,7 +333,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
       this.cachedSelection = null;
       return;
     }
-    const snapshot = this.readEditorSelection(editor);
+    const snapshot = this.readCurrentSelection(editor);
     if (snapshot) {
       this.cachedSelection = snapshot;
       debugLog(`captureCurrentSelection(${source}): cached editor range`);
@@ -277,8 +347,8 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
 
   // ───────────────────────── Modal entry point ──────────────────
 
-  async openTranslationModal(editor: Editor, snapshot?: SelectionSnapshot): Promise<void> {
-    const resolvedSnapshot = snapshot ?? this.buildSnapshot(editor);
+  async openTranslationModal(editor: Editor): Promise<void> {
+    const resolvedSnapshot = this.buildSnapshot(editor);
     if (!resolvedSnapshot) {
       new Notice("Select some text first.");
       return;
@@ -306,7 +376,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
    * (where no snapshot is pre-built by the menu handler).
    */
   private buildSnapshot(editor: Editor): SelectionSnapshot | null {
-    const live = this.readEditorSelection(editor);
+    const live = this.readCurrentSelection(editor);
     const cached = this.cachedSelection;
     this.cachedSelection = null; // Cached ranges may only be consumed once.
     this.preserveSelectionForUI = false;
@@ -584,6 +654,7 @@ class TranslationResultModal extends Modal {
       from: { ...snap.from },
       to: { ...snap.to },
       text: typeof snap.text === "string" ? snap.text : "",
+      source: snap.source,
     };
     debugLog("Modal constructor: _snap.text =", JSON.stringify(this._snap.text.slice(0, 80)));
   }

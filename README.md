@@ -6,7 +6,7 @@
 
 ## English
 
-DeepL Translate Selection is an [Obsidian](https://obsidian.md) plugin that translates selected text with the [DeepL API](https://www.deepl.com/pro-api) or [DeepSeek](https://platform.deepseek.com) (OpenAI-compatible LLM). Version 1.2.0 supports Windows desktop and enables Android mobile use with Obsidian 1.5.0 or later. Android support has automated regression coverage; physical-device verification is still pending.
+DeepL Translate Selection is an [Obsidian](https://obsidian.md) plugin that translates selected text with the [DeepL API](https://www.deepl.com/pro-api) or [DeepSeek](https://platform.deepseek.com) (OpenAI-compatible LLM). Version 1.2.1 supports Windows desktop and Android mobile with Obsidian 1.5.0 or later, and fixes expanded Android selections being reduced to their initial word. The fix has automated and CodeMirror DOM regression coverage; physical-device retesting is still pending.
 
 ### Features
 
@@ -99,7 +99,7 @@ For more details, see [PRIVACY.md](./PRIVACY.md).
 
 ## 中文
 
-DeepL Translate Selection 是一款 [Obsidian](https://obsidian.md) 插件，用于通过 [DeepL API](https://www.deepl.com/pro-api) 或 [DeepSeek](https://platform.deepseek.com)（OpenAI 兼容 LLM）翻译编辑器中选中的文本。1.2.0 版本保留 Windows 桌面支持，并开放 Android 手机使用，需要 Obsidian 1.5.0 或更高版本。Android 兼容逻辑已通过自动化回归测试，尚待真机验证。
+DeepL Translate Selection 是一款 [Obsidian](https://obsidian.md) 插件，用于通过 [DeepL API](https://www.deepl.com/pro-api) 或 [DeepSeek](https://platform.deepseek.com)（OpenAI 兼容 LLM）翻译编辑器中选中的文本。1.2.1 版本支持 Windows 和 Android，需要 Obsidian 1.5.0 或更高版本，并修复手机上选中整段却只翻译第一个单词的问题。修复已通过自动化和 CodeMirror DOM 回归测试，尚待 Android 真机复测。
 
 ### 核心功能
 
@@ -192,7 +192,7 @@ DeepL 和 DeepSeek 是第三方服务。使用本插件可能需要相应的 API
 
 ## Development and releases / 开发与发布
 
-Run `npm ci`, `npm run typecheck`, and `npm test`. Tests build `main.js` and exercise selection handling, output actions, clipboard fallback, and provider requests with a mocked Obsidian host. They do not replace Windows or Android device testing.
+Run `npm ci`, `npm run typecheck`, and `npm test`. Tests build `main.js` and exercise selection handling, output actions, clipboard fallback, and provider requests with a mocked Obsidian host. Native selection mappings also run against actual CodeMirror editor DOMs in jsdom. They do not replace Windows or Android device testing. CodeMirror is provided by Obsidian at runtime; jsdom is used only for development tests.
 
 Version tags trigger GitHub Actions to test, build, and publish the three Obsidian plugin files. See [release and network configuration instructions](docs/github-release.md).
 
