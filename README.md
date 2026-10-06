@@ -6,16 +6,17 @@
 
 ## English
 
-DeepL Translate Selection is an [Obsidian](https://obsidian.md) plugin that translates selected text with the [DeepL API](https://www.deepl.com/pro-api) or [DeepSeek](https://platform.deepseek.com) (OpenAI-compatible LLM). It is designed for quick Chinese-English translation from the editor context menu or command palette.
+DeepL Translate Selection is an [Obsidian](https://obsidian.md) plugin that translates selected text with the [DeepL API](https://www.deepl.com/pro-api) or [DeepSeek](https://platform.deepseek.com) (OpenAI-compatible LLM). Version 1.2.0 supports Windows desktop and enables Android mobile use with Obsidian 1.5.0 or later. Android support has automated regression coverage; physical-device verification is still pending.
 
 ### Features
 
 | Feature | Description |
 |---------|-------------|
-| Right-click translation | Select text, right-click, and run DeepL Translate. |
+| Right-click translation | Select text, right-click, and choose Translate. |
+| Mobile translation | Select text, then use the command palette, mobile toolbar, or languages ribbon button. |
 | Smart language direction | Detects Chinese to English or English to Chinese. |
 | Output options | Insert below, replace the selection, or copy to clipboard. |
-| Command palette support | Run `DeepL: Translate Selection` from the command palette. |
+| Command palette support | Search for `Translate selection` in the command palette. |
 | Free and Pro API support | Supports DeepL Free and DeepL Pro API keys. |
 | Quality-optimized model | Uses DeepL's `quality_optimized` model setting. |
 | DeepSeek / LLM translation | Use DeepSeek or any OpenAI-compatible LLM as an alternative translation engine. |
@@ -56,9 +57,18 @@ The default model is `deepseek-v4-flash`. You can change it or point the base UR
 ### Usage
 
 1. Select text in the Markdown editor.
-2. Right-click and choose `DeepL Translate`, or run `DeepL: Translate Selection` from the command palette.
+2. On Windows, right-click and choose `Translate`, or search for `Translate selection` in the command palette. You can also use the languages ribbon button.
 3. Review the translation in the modal.
 4. Choose Insert below, Replace selection, or Copy.
+
+### Android usage
+
+1. Install or update the plugin through Community plugins on your phone, and enable it. Configure your DeepL or DeepSeek key in that vault's plugin settings.
+2. Open a note in editing mode and long-press to select text.
+3. Open the Obsidian command palette and search for `Translate selection`. For quicker access, add this command in Settings -> Mobile -> Manage toolbar options.
+4. Review the translation and choose Insert below, Replace selection, or Copy. If Android blocks automatic clipboard access, long-press the translated text and use the system Copy action.
+
+For manual installation, copy the release's three plugin files into the **Android vault's** `.obsidian/plugins/deepl-translate-selection/` folder. Windows and Android use the same files. Update `main.js`, `manifest.json`, and `styles.css` together, preserving your existing `data.json` settings file.
 
 ### Settings
 
@@ -89,16 +99,17 @@ For more details, see [PRIVACY.md](./PRIVACY.md).
 
 ## 中文
 
-DeepL Translate Selection 是一款 [Obsidian](https://obsidian.md) 插件，用于通过 [DeepL API](https://www.deepl.com/pro-api) 或 [DeepSeek](https://platform.deepseek.com)（OpenAI 兼容 LLM）翻译编辑器中选中的文本，适合在中文和英文之间快速翻译。
+DeepL Translate Selection 是一款 [Obsidian](https://obsidian.md) 插件，用于通过 [DeepL API](https://www.deepl.com/pro-api) 或 [DeepSeek](https://platform.deepseek.com)（OpenAI 兼容 LLM）翻译编辑器中选中的文本。1.2.0 版本保留 Windows 桌面支持，并开放 Android 手机使用，需要 Obsidian 1.5.0 或更高版本。Android 兼容逻辑已通过自动化回归测试，尚待真机验证。
 
 ### 核心功能
 
 | 功能 | 说明 |
 |------|------|
-| 右键翻译 | 选中文本后右键运行 DeepL Translate。 |
+| 右键翻译 | 选中文本后右键选择 Translate。 |
+| 手机翻译 | 选中文本后通过命令面板、移动工具栏或侧边栏语言按钮翻译。 |
 | 智能方向判断 | 自动判断中文到英文或英文到中文。 |
 | 三种输出方式 | 插入到下方、替换选中文本、复制到剪贴板。 |
-| 命令面板支持 | 可通过命令面板运行 `DeepL: Translate Selection`。 |
+| 命令面板支持 | 可通过命令面板搜索 `Translate selection`。 |
 | Free 和 Pro API | 支持 DeepL Free 与 DeepL Pro API key。 |
 | 质量优化模型 | 使用 DeepL 的 `quality_optimized` 模型设置。 |
 | DeepSeek / LLM 翻译 | 使用 DeepSeek 或任何 OpenAI 兼容 LLM 作为备选翻译引擎。 |
@@ -139,9 +150,18 @@ DeepL Translate Selection 是一款 [Obsidian](https://obsidian.md) 插件，用
 ### 使用方法
 
 1. 在 Markdown 编辑器中选中文本。
-2. 右键选择 `DeepL Translate`，或从命令面板运行 `DeepL: Translate Selection`。
+2. Windows 上右键选择 `Translate`，或从命令面板搜索 `Translate selection`。也可以点击侧边栏的语言按钮。
 3. 在弹窗中查看译文。
 4. 选择插入到下方、替换选中文本或复制到剪贴板。
+
+### Android 手机使用
+
+1. 在手机的 Obsidian 第三方插件中安装或更新本插件并启用，在当前仓库的插件设置中配置 DeepL 或 DeepSeek API key。
+2. 打开笔记的编辑模式，长按选中文本。
+3. 打开 Obsidian 命令面板，搜索 `Translate selection`。为方便使用，可以在 设置 -> 移动端 -> 管理工具栏选项 中添加该命令。
+4. 查看译文，选择插入、替换或复制。如果 Android 拒绝自动复制，可以长按译文，使用系统的复制操作。
+
+手动安装时，将发布的三个插件文件复制到 **Android 手机仓库**的 `.obsidian/plugins/deepl-translate-selection/` 目录。Windows 和 Android 使用同一套文件。更新时同时替换 `main.js`、`manifest.json`、`styles.css`，保留已有的 `data.json` 设置文件。
 
 ### 设置选项
 
@@ -169,6 +189,12 @@ DeepL 和 DeepSeek 是第三方服务。使用本插件可能需要相应的 API
 更多细节见 [PRIVACY.md](./PRIVACY.md)。
 
 ---
+
+## Development and releases / 开发与发布
+
+Run `npm ci`, `npm run typecheck`, and `npm test`. Tests build `main.js` and exercise selection handling, output actions, clipboard fallback, and provider requests with a mocked Obsidian host. They do not replace Windows or Android device testing.
+
+Version tags trigger GitHub Actions to test, build, and publish the three Obsidian plugin files. See [release and network configuration instructions](docs/github-release.md).
 
 ## License
 

@@ -58,6 +58,7 @@ interface DeepSeekChatResponse {
 
 interface SelectionSnapshot {
   editor: Editor;
+  filePath: string | null;
   from: EditorPosition;
   to: EditorPosition;
   text: string;
@@ -92,7 +93,7 @@ const DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaki
 6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
 
 const DEBUG = false;
-const BUILD_ID = "v3-20260617-1100";
+const BUILD_ID = "v1.2.0";
 
 function debugLog(...args: unknown[]): void {
   if (DEBUG) {
@@ -140,13 +141,10 @@ function sanitizeText(value: unknown): string {
 export default class DeepLTranslateSelectionPlugin extends Plugin {
   settings: DeepLTranslateSettings = DEFAULT_SETTINGS;
 
-  /**
-   * Cache for editor selection, captured at the earliest possible
-   * moment (mousedown / contextmenu) before Obsidian clears it.
-   */
-  private cachedText = "";
-  private cachedFrom: EditorPosition = { line: 0, ch: 0 };
-  private cachedTo: EditorPosition = { line: 0, ch: 0 };
+  // Keep positions and editor identity together when a toolbar or menu takes focus.
+  private cachedSelection: SelectionSnapshot | null = null;
+  private preserveSelectionForUI = false;
+  private selectionCaptureTimer: number | undefined;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -163,17 +161,44 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
       },
     });
 
-    // ── Pre-capture on right-click mousedown (earliest event) ──
-    this.registerDomEvent(document, "mousedown", (evt: MouseEvent) => {
-      if (evt.button === 2) {
-        // button 2 = right-click
-        this.captureCurrentSelection("mousedown");
-      }
-    });
-
-    // ── Pre-capture on contextmenu (fires after mousedown) ─────
+    // Pointer events cover both a Windows mouse and Android touch input.
+    // Capture before a ribbon button, mobile toolbar, or menu takes focus.
+    this.registerDomEvent(document, "pointerdown", (evt: PointerEvent) => {
+      this.preserveSelectionForUI = !(evt.target instanceof HTMLElement
+        && evt.target.closest(".cm-editor"));
+      this.captureCurrentSelection("pointerdown");
+    }, true);
     this.registerDomEvent(document, "contextmenu", () => {
       this.captureCurrentSelection("contextmenu");
+    }, true);
+
+    const scheduleCapture = () => {
+      window.clearTimeout(this.selectionCaptureTimer);
+      // Let the editor update its selection before reading its cursor positions.
+      this.selectionCaptureTimer = window.setTimeout(() => {
+        this.selectionCaptureTimer = undefined;
+        this.captureCurrentSelection("selection change", true);
+      }, 0);
+    };
+    this.registerDomEvent(document, "selectionchange", scheduleCapture);
+    this.registerDomEvent(document, "pointerup", scheduleCapture);
+    this.registerDomEvent(document, "keyup", scheduleCapture);
+    this.register(() => window.clearTimeout(this.selectionCaptureTimer));
+
+    const clearSelection = () => {
+      this.cachedSelection = null;
+      this.preserveSelectionForUI = false;
+    };
+    this.registerEvent(this.app.workspace.on("active-leaf-change", clearSelection));
+    this.registerEvent(this.app.workspace.on("file-open", clearSelection));
+
+    this.addRibbonIcon("languages", "Translate selection", () => {
+      const editor = this.getActiveEditor();
+      if (editor) {
+        void this.openTranslationModal(editor);
+      } else {
+        new Notice("Open a note in editing mode and select some text first.");
+      }
     });
 
     // ── Right-click context menu entry ─────────────────────────
@@ -181,26 +206,17 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
       this.app.workspace.on("editor-menu", (menu, editor) => {
         debugLog("editor-menu triggered");
 
-        const text = this.getSelectedText(editor, "editor-menu");
-        if (!text) {
+        const snapshot = this.buildSnapshot(editor);
+        if (!snapshot) {
           debugLog("No text found → menu item not added");
           return;
         }
-
-        // Snapshot the positions now so they're stable in the closure
-        const snapshot: SelectionSnapshot = {
-          editor,
-          from: { ...this.cachedFrom },
-          to: { ...this.cachedTo },
-          text,
-        };
 
         menu.addItem((item) => {
           item
             .setTitle("Translate")
             .setIcon("languages")
             .onClick(() => {
-              debugLog("Menu item clicked, text =", JSON.stringify(snapshot.text));
               void this.openTranslationModal(editor, snapshot);
             });
         });
@@ -210,102 +226,53 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
 
   // ───────────────────────── Selection capture ──────────────────
 
-  /**
-   * Capture the selection from the active MarkdownView editor.
-   * Called as early as possible (mousedown / contextmenu).
-   */
-  private captureCurrentSelection(source: string): void {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!view?.editor) {
-      debugLog(`captureCurrentSelection(${source}): no active MarkdownView`);
-      return;
-    }
-
-    const editor = view.editor;
-
-    // Method 1: editor.getSelection()
-    let text = sanitizeText(editor.getSelection());
-    debugLog(
-      `captureCurrentSelection(${source}): getSelection() →`,
-      JSON.stringify(editor.getSelection()),
-      "sanitized →",
-      JSON.stringify(text),
-    );
-
-    // Method 2: range-based using cursors
-    if (!text) {
-      const from = editor.getCursor("from");
-      const to = editor.getCursor("to");
-      if (from.line !== to.line || from.ch !== to.ch) {
-        text = sanitizeText(editor.getRange(from, to));
-        debugLog(
-          `captureCurrentSelection(${source}): getRange() →`,
-          JSON.stringify(text),
-        );
-      }
-    }
-
-    // Method 3: DOM selection
-    if (!text) {
-      text = sanitizeText(window.getSelection()?.toString());
-      debugLog(
-        `captureCurrentSelection(${source}): DOM selection →`,
-        JSON.stringify(text),
-      );
-    }
-
-    if (text) {
-      this.cachedText = text;
-      this.cachedFrom = editor.getCursor("from");
-      this.cachedTo = editor.getCursor("to");
-      debugLog(`captureCurrentSelection(${source}): cached "${text.slice(0, 60)}…"`);
-    }
+  private getActiveEditor(): Editor | null {
+    return this.app.workspace.activeEditor?.editor
+      ?? this.app.workspace.getActiveViewOfType(MarkdownView)?.editor
+      ?? null;
   }
 
-  /**
-   * Get the selected text, trying the live editor first,
-   * then falling back to the cache.
-   */
-  private getSelectedText(editor: Editor, source: string): string {
-    // Try 1: direct editor.getSelection()
-    let text = sanitizeText(editor.getSelection());
-    if (text) {
-      debugLog(`getSelectedText(${source}): got from editor.getSelection()`);
-      this.cachedFrom = editor.getCursor("from");
-      this.cachedTo = editor.getCursor("to");
-      return text;
+  private readEditorSelection(editor: Editor): SelectionSnapshot | null {
+    const from = { ...editor.getCursor("from") };
+    const to = { ...editor.getCursor("to") };
+    if (from.line === to.line && from.ch === to.ch) {
+      return null;
     }
+    // Use the editor range, not window.getSelection(): DOM selection can belong
+    // to a dialog or settings field and has no reliable note coordinates.
+    const text = sanitizeText(editor.getRange(from, to));
+    return text ? { editor, filePath: this.getEditorFilePath(editor), from, to, text } : null;
+  }
 
-    // Try 2: range-based
-    const from = editor.getCursor("from");
-    const to = editor.getCursor("to");
-    if (from.line !== to.line || from.ch !== to.ch) {
-      text = sanitizeText(editor.getRange(from, to));
-      if (text) {
-        debugLog(`getSelectedText(${source}): got from editor.getRange()`);
-        this.cachedFrom = from;
-        this.cachedTo = to;
-        return text;
-      }
+  private getEditorFilePath(editor: Editor): string | null {
+    const active = this.app.workspace.activeEditor;
+    if (active?.editor === editor) return active.file?.path ?? null;
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    return view?.editor === editor ? view.file?.path ?? null : null;
+  }
+
+  isSnapshotValid(snapshot: SelectionSnapshot): boolean {
+    return this.getActiveEditor() === snapshot.editor
+      && this.getEditorFilePath(snapshot.editor) === snapshot.filePath
+      && snapshot.editor.getRange(snapshot.from, snapshot.to) === snapshot.text;
+  }
+
+  private captureCurrentSelection(source: string, clearEmptySelection = false): void {
+    const editor = this.getActiveEditor();
+    if (!editor) {
+      this.cachedSelection = null;
+      return;
     }
-
-    // Try 3: DOM selection
-    text = sanitizeText(window.getSelection()?.toString());
-    if (text) {
-      debugLog(`getSelectedText(${source}): got from DOM selection`);
-      return text;
+    const snapshot = this.readEditorSelection(editor);
+    if (snapshot) {
+      this.cachedSelection = snapshot;
+      debugLog(`captureCurrentSelection(${source}): cached editor range`);
+    } else if ((clearEmptySelection && editor.hasFocus() && !this.preserveSelectionForUI)
+      || this.cachedSelection?.editor !== editor) {
+      // A caret move inside the note deselects text. Losing focus to a menu
+      // should instead preserve the range until the translation command runs.
+      this.cachedSelection = null;
     }
-
-    // Try 4: fall back to cached text from mousedown/contextmenu
-    if (this.cachedText) {
-      debugLog(`getSelectedText(${source}): using cached text`);
-      text = this.cachedText;
-      this.cachedText = ""; // consume once
-      return text;
-    }
-
-    debugLog(`getSelectedText(${source}): nothing found`);
-    return "";
   }
 
   // ───────────────────────── Modal entry point ──────────────────
@@ -339,17 +306,21 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
    * (where no snapshot is pre-built by the menu handler).
    */
   private buildSnapshot(editor: Editor): SelectionSnapshot | null {
-    const text = this.getSelectedText(editor, "buildSnapshot");
-    if (!text) {
+    const live = this.readEditorSelection(editor);
+    const cached = this.cachedSelection;
+    this.cachedSelection = null; // Cached ranges may only be consumed once.
+    this.preserveSelectionForUI = false;
+    if (live) return live;
+    if (!cached || cached.editor !== editor) return null;
+
+    const cursor = editor.getCursor();
+    const atBoundary = [cached.from, cached.to].some(
+      (pos) => pos.line === cursor.line && pos.ch === cursor.ch,
+    );
+    if (!atBoundary || !this.isSnapshotValid(cached)) {
       return null;
     }
-
-    return {
-      editor,
-      from: { ...this.cachedFrom },
-      to: { ...this.cachedTo },
-      text,
-    };
+    return cached;
   }
 
   // ───────────────────────── Settings helpers ───────────────────
@@ -609,6 +580,7 @@ class TranslationResultModal extends Modal {
     this.plugin = plugin;
     this._snap = {
       editor: snap.editor,
+      filePath: snap.filePath,
       from: { ...snap.from },
       to: { ...snap.to },
       text: typeof snap.text === "string" ? snap.text : "",
@@ -707,6 +679,7 @@ class TranslationResultModal extends Modal {
   }
 
   private insertBelow(): void {
+    if (!this.isSelectionUnchanged()) return;
     const insertion = `\n${this.translatedText}`;
     this._snap.editor.replaceRange(insertion, this._snap.to);
     new Notice("Inserted translation below the selection.");
@@ -714,6 +687,7 @@ class TranslationResultModal extends Modal {
   }
 
   private replaceSelection(): void {
+    if (!this.isSelectionUnchanged()) return;
     this._snap.editor.replaceRange(this.translatedText, this._snap.from, this._snap.to);
     new Notice("Replaced the selected text with the translation.");
     this.close();
@@ -721,11 +695,38 @@ class TranslationResultModal extends Modal {
 
   private async copyTranslation(): Promise<void> {
     try {
-      await navigator.clipboard.writeText(this.translatedText);
-      new Notice("Translation copied to clipboard.");
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(this.translatedText);
+          new Notice("Translation copied to clipboard.");
+          return;
+        } catch {
+          // Some Android WebViews expose Clipboard API but reject writes.
+        }
+      }
+
+      const doc = this.translationTextArea.ownerDocument;
+      const previousFocus = doc.activeElement;
+      this.translationTextArea.focus();
+      this.translationTextArea.select();
+      const copied = typeof doc.execCommand === "function" && doc.execCommand("copy");
+      if (copied) {
+        if (previousFocus instanceof HTMLElement) previousFocus.focus();
+        new Notice("Translation copied to clipboard.");
+        return;
+      }
+      new Notice("Could not copy automatically. Long-press or select the translated text to copy it.");
     } catch {
-      new Notice("Could not copy the translation to the clipboard.");
+      new Notice("Could not copy automatically. Long-press or select the translated text to copy it.");
     }
+  }
+
+  private isSelectionUnchanged(): boolean {
+    if (this.plugin.isSnapshotValid(this._snap)) {
+      return true;
+    }
+    new Notice("The original note or text changed. Select it again and retry the translation.");
+    return false;
   }
 }
 

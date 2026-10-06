@@ -51,7 +51,7 @@ var DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaking
 5. For academic or technical content, use standard terminology in the target field.
 6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
 var DEBUG = false;
-var BUILD_ID = "v3-20260617-1100";
+var BUILD_ID = "v1.2.0";
 function debugLog(...args) {
   if (DEBUG) {
     console.debug(`[DeepL Translate ${BUILD_ID}]`, ...args);
@@ -80,13 +80,9 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
-    /**
-     * Cache for editor selection, captured at the earliest possible
-     * moment (mousedown / contextmenu) before Obsidian clears it.
-     */
-    this.cachedText = "";
-    this.cachedFrom = { line: 0, ch: 0 };
-    this.cachedTo = { line: 0, ch: 0 };
+    // Keep positions and editor identity together when a toolbar or menu takes focus.
+    this.cachedSelection = null;
+    this.preserveSelectionForUI = false;
   }
   async onload() {
     await this.loadSettings();
@@ -99,31 +95,48 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
         void this.openTranslationModal(editor);
       }
     });
-    this.registerDomEvent(document, "mousedown", (evt) => {
-      if (evt.button === 2) {
-        this.captureCurrentSelection("mousedown");
-      }
-    });
+    this.registerDomEvent(document, "pointerdown", (evt) => {
+      this.preserveSelectionForUI = !(evt.target instanceof HTMLElement && evt.target.closest(".cm-editor"));
+      this.captureCurrentSelection("pointerdown");
+    }, true);
     this.registerDomEvent(document, "contextmenu", () => {
       this.captureCurrentSelection("contextmenu");
+    }, true);
+    const scheduleCapture = () => {
+      window.clearTimeout(this.selectionCaptureTimer);
+      this.selectionCaptureTimer = window.setTimeout(() => {
+        this.selectionCaptureTimer = void 0;
+        this.captureCurrentSelection("selection change", true);
+      }, 0);
+    };
+    this.registerDomEvent(document, "selectionchange", scheduleCapture);
+    this.registerDomEvent(document, "pointerup", scheduleCapture);
+    this.registerDomEvent(document, "keyup", scheduleCapture);
+    this.register(() => window.clearTimeout(this.selectionCaptureTimer));
+    const clearSelection = () => {
+      this.cachedSelection = null;
+      this.preserveSelectionForUI = false;
+    };
+    this.registerEvent(this.app.workspace.on("active-leaf-change", clearSelection));
+    this.registerEvent(this.app.workspace.on("file-open", clearSelection));
+    this.addRibbonIcon("languages", "Translate selection", () => {
+      const editor = this.getActiveEditor();
+      if (editor) {
+        void this.openTranslationModal(editor);
+      } else {
+        new import_obsidian.Notice("Open a note in editing mode and select some text first.");
+      }
     });
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
         debugLog("editor-menu triggered");
-        const text = this.getSelectedText(editor, "editor-menu");
-        if (!text) {
+        const snapshot = this.buildSnapshot(editor);
+        if (!snapshot) {
           debugLog("No text found \u2192 menu item not added");
           return;
         }
-        const snapshot = {
-          editor,
-          from: { ...this.cachedFrom },
-          to: { ...this.cachedTo },
-          text
-        };
         menu.addItem((item) => {
           item.setTitle("Translate").setIcon("languages").onClick(() => {
-            debugLog("Menu item clicked, text =", JSON.stringify(snapshot.text));
             void this.openTranslationModal(editor, snapshot);
           });
         });
@@ -131,85 +144,40 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
     );
   }
   // ───────────────────────── Selection capture ──────────────────
-  /**
-   * Capture the selection from the active MarkdownView editor.
-   * Called as early as possible (mousedown / contextmenu).
-   */
-  captureCurrentSelection(source) {
+  getActiveEditor() {
+    return this.app.workspace.activeEditor?.editor ?? this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView)?.editor ?? null;
+  }
+  readEditorSelection(editor) {
+    const from = { ...editor.getCursor("from") };
+    const to = { ...editor.getCursor("to") };
+    if (from.line === to.line && from.ch === to.ch) {
+      return null;
+    }
+    const text = sanitizeText(editor.getRange(from, to));
+    return text ? { editor, filePath: this.getEditorFilePath(editor), from, to, text } : null;
+  }
+  getEditorFilePath(editor) {
+    const active = this.app.workspace.activeEditor;
+    if (active?.editor === editor) return active.file?.path ?? null;
     const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
-    if (!view?.editor) {
-      debugLog(`captureCurrentSelection(${source}): no active MarkdownView`);
+    return view?.editor === editor ? view.file?.path ?? null : null;
+  }
+  isSnapshotValid(snapshot) {
+    return this.getActiveEditor() === snapshot.editor && this.getEditorFilePath(snapshot.editor) === snapshot.filePath && snapshot.editor.getRange(snapshot.from, snapshot.to) === snapshot.text;
+  }
+  captureCurrentSelection(source, clearEmptySelection = false) {
+    const editor = this.getActiveEditor();
+    if (!editor) {
+      this.cachedSelection = null;
       return;
     }
-    const editor = view.editor;
-    let text = sanitizeText(editor.getSelection());
-    debugLog(
-      `captureCurrentSelection(${source}): getSelection() \u2192`,
-      JSON.stringify(editor.getSelection()),
-      "sanitized \u2192",
-      JSON.stringify(text)
-    );
-    if (!text) {
-      const from = editor.getCursor("from");
-      const to = editor.getCursor("to");
-      if (from.line !== to.line || from.ch !== to.ch) {
-        text = sanitizeText(editor.getRange(from, to));
-        debugLog(
-          `captureCurrentSelection(${source}): getRange() \u2192`,
-          JSON.stringify(text)
-        );
-      }
+    const snapshot = this.readEditorSelection(editor);
+    if (snapshot) {
+      this.cachedSelection = snapshot;
+      debugLog(`captureCurrentSelection(${source}): cached editor range`);
+    } else if (clearEmptySelection && editor.hasFocus() && !this.preserveSelectionForUI || this.cachedSelection?.editor !== editor) {
+      this.cachedSelection = null;
     }
-    if (!text) {
-      text = sanitizeText(window.getSelection()?.toString());
-      debugLog(
-        `captureCurrentSelection(${source}): DOM selection \u2192`,
-        JSON.stringify(text)
-      );
-    }
-    if (text) {
-      this.cachedText = text;
-      this.cachedFrom = editor.getCursor("from");
-      this.cachedTo = editor.getCursor("to");
-      debugLog(`captureCurrentSelection(${source}): cached "${text.slice(0, 60)}\u2026"`);
-    }
-  }
-  /**
-   * Get the selected text, trying the live editor first,
-   * then falling back to the cache.
-   */
-  getSelectedText(editor, source) {
-    let text = sanitizeText(editor.getSelection());
-    if (text) {
-      debugLog(`getSelectedText(${source}): got from editor.getSelection()`);
-      this.cachedFrom = editor.getCursor("from");
-      this.cachedTo = editor.getCursor("to");
-      return text;
-    }
-    const from = editor.getCursor("from");
-    const to = editor.getCursor("to");
-    if (from.line !== to.line || from.ch !== to.ch) {
-      text = sanitizeText(editor.getRange(from, to));
-      if (text) {
-        debugLog(`getSelectedText(${source}): got from editor.getRange()`);
-        this.cachedFrom = from;
-        this.cachedTo = to;
-        return text;
-      }
-    }
-    text = sanitizeText(window.getSelection()?.toString());
-    if (text) {
-      debugLog(`getSelectedText(${source}): got from DOM selection`);
-      return text;
-    }
-    if (this.cachedText) {
-      debugLog(`getSelectedText(${source}): using cached text`);
-      text = this.cachedText;
-      this.cachedText = "";
-      return text;
-    }
-    debugLog(`getSelectedText(${source}): nothing found`);
-    return "";
   }
   // ───────────────────────── Modal entry point ──────────────────
   async openTranslationModal(editor, snapshot) {
@@ -234,16 +202,20 @@ var DeepLTranslateSelectionPlugin = class extends import_obsidian.Plugin {
    * (where no snapshot is pre-built by the menu handler).
    */
   buildSnapshot(editor) {
-    const text = this.getSelectedText(editor, "buildSnapshot");
-    if (!text) {
+    const live = this.readEditorSelection(editor);
+    const cached = this.cachedSelection;
+    this.cachedSelection = null;
+    this.preserveSelectionForUI = false;
+    if (live) return live;
+    if (!cached || cached.editor !== editor) return null;
+    const cursor = editor.getCursor();
+    const atBoundary = [cached.from, cached.to].some(
+      (pos) => pos.line === cursor.line && pos.ch === cursor.ch
+    );
+    if (!atBoundary || !this.isSnapshotValid(cached)) {
       return null;
     }
-    return {
-      editor,
-      from: { ...this.cachedFrom },
-      to: { ...this.cachedTo },
-      text
-    };
+    return cached;
   }
   // ───────────────────────── Settings helpers ───────────────────
   async loadSettings() {
@@ -441,6 +413,7 @@ var TranslationResultModal = class extends import_obsidian.Modal {
     this.plugin = plugin;
     this._snap = {
       editor: snap.editor,
+      filePath: snap.filePath,
       from: { ...snap.from },
       to: { ...snap.to },
       text: typeof snap.text === "string" ? snap.text : ""
@@ -525,6 +498,7 @@ var TranslationResultModal = class extends import_obsidian.Modal {
     this.copyButton.disabled = false;
   }
   insertBelow() {
+    if (!this.isSelectionUnchanged()) return;
     const insertion = `
 ${this.translatedText}`;
     this._snap.editor.replaceRange(insertion, this._snap.to);
@@ -532,17 +506,42 @@ ${this.translatedText}`;
     this.close();
   }
   replaceSelection() {
+    if (!this.isSelectionUnchanged()) return;
     this._snap.editor.replaceRange(this.translatedText, this._snap.from, this._snap.to);
     new import_obsidian.Notice("Replaced the selected text with the translation.");
     this.close();
   }
   async copyTranslation() {
     try {
-      await navigator.clipboard.writeText(this.translatedText);
-      new import_obsidian.Notice("Translation copied to clipboard.");
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(this.translatedText);
+          new import_obsidian.Notice("Translation copied to clipboard.");
+          return;
+        } catch {
+        }
+      }
+      const doc = this.translationTextArea.ownerDocument;
+      const previousFocus = doc.activeElement;
+      this.translationTextArea.focus();
+      this.translationTextArea.select();
+      const copied = typeof doc.execCommand === "function" && doc.execCommand("copy");
+      if (copied) {
+        if (previousFocus instanceof HTMLElement) previousFocus.focus();
+        new import_obsidian.Notice("Translation copied to clipboard.");
+        return;
+      }
+      new import_obsidian.Notice("Could not copy automatically. Long-press or select the translated text to copy it.");
     } catch {
-      new import_obsidian.Notice("Could not copy the translation to the clipboard.");
+      new import_obsidian.Notice("Could not copy automatically. Long-press or select the translated text to copy it.");
     }
+  }
+  isSelectionUnchanged() {
+    if (this.plugin.isSnapshotValid(this._snap)) {
+      return true;
+    }
+    new import_obsidian.Notice("The original note or text changed. Select it again and retry the translation.");
+    return false;
   }
 };
 var DeepLTranslateSettingTab = class extends import_obsidian.PluginSettingTab {

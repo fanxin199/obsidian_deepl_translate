@@ -21,6 +21,7 @@
 }
 
 .deepl-translate-textarea {
+  box-sizing: border-box;
   min-height: 140px;
   resize: vertical;
   width: 100%;
@@ -47,6 +48,22 @@
   flex-wrap: wrap;
   gap: 0.75rem;
   justify-content: flex-end;
+}
+
+.is-mobile .deepl-translate-modal {
+  width: 100%;
+  max-width: 100%;
+}
+
+.is-mobile .deepl-translate-textarea {
+  min-height: 100px;
+  max-height: 30vh;
+  font-size: 16px;
+}
+
+.is-mobile .deepl-translate-actions button {
+  flex: 1 1 140px;
+  min-height: 44px;
 }
 
 .deepl-setting-api-key-input {
