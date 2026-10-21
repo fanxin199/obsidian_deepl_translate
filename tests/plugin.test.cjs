@@ -75,7 +75,7 @@ async function loadPlugin(editor = makeEditor(), settings = {}, options = {}) {
     open() { h.modal = this; this.onOpen(); }
     close() { this.closed = true; this.onClose?.(); }
   }
-  h.navigator = { clipboard: { async writeText(text) { h.clipboard.push(text); } } };
+  h.navigator = { language: h.language, clipboard: { async writeText(text) { h.clipboard.push(text); } } };
   let timerId = 0;
   const moduleObject = { exports: {} };
   vm.runInNewContext(bundle, {
@@ -130,6 +130,17 @@ async function loadPlugin(editor = makeEditor(), settings = {}, options = {}) {
 async function readingFixture(html, settings = {}) {
   const { JSDOM } = require('jsdom');
   const dom = new JSDOM(`<div class="is-mobile"><div class="markdown-preview-view">${html}</div></div><div id="palette">Translate selection</div>`);
+  // Obsidian extends HTMLElement with helpers that jsdom does not provide.
+  dom.window.HTMLElement.prototype.createEl = function(tag, options = {}) {
+    const element = this.ownerDocument.createElement(tag);
+    if (options.cls) element.className = options.cls;
+    if (options.text) element.textContent = options.text;
+    this.append(element);
+    return element;
+  };
+  dom.window.HTMLElement.prototype.createDiv = function(options = {}) {
+    return this.createEl('div', options);
+  };
   const h = await loadPlugin(makeEditor('Hidden Markdown source'), settings, { document: dom.window.document, language: 'zh-CN' });
   const root = dom.window.document.querySelector('.markdown-preview-view');
   const view = { editor: h.editor, file: { path: 'reading.md' }, getMode: () => 'preview', previewMode: { containerEl: root } };
