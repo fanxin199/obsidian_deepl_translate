@@ -126,3 +126,7 @@
   min-width: 44px;
   min-height: 44px;
 }
+
+.deepl-translate-provider-section.is-hidden {
+  display: none;
+}
