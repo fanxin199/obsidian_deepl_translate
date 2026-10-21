@@ -10,7 +10,6 @@ import {
   RequestUrlResponse,
   Setting,
   editorInfoField,
-  getLanguage,
   requestUrl,
 } from "obsidian";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
@@ -200,16 +199,16 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
         this.captureCurrentSelection("selection change", true);
       }, 0);
     };
-    const plugin = this;
+    const editorViews = this.editorViews;
     this.registerEditorExtension(ViewPlugin.fromClass(class {
       constructor(readonly view: EditorView) {
-        plugin.editorViews.add(view);
+        editorViews.add(view);
       }
       update(update: ViewUpdate): void {
         if (update.selectionSet || update.docChanged) scheduleCapture();
       }
       destroy(): void {
-        plugin.editorViews.delete(this.view);
+        editorViews.delete(this.view);
       }
     }));
     this.registerDomEvent(document, "selectionchange", scheduleCapture);
@@ -410,10 +409,11 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
         continue;
       }
       if (existingButton) continue;
-      const button = block.ownerDocument.createElement("button");
-      button.className = "deepl-translate-block-action";
+      const button = block.createEl("button", {
+        cls: "deepl-translate-block-action",
+        text: this.isChinese() ? "译" : "Tr",
+      });
       button.type = "button";
-      button.textContent = this.isChinese() ? "译" : "Tr";
       button.title = this.isChinese() ? "翻译整个标题或段落" : "Translate this heading or paragraph";
       button.setAttribute("aria-label", button.title);
       button.addEventListener("pointerdown", (event) => event.stopPropagation());
@@ -432,7 +432,9 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
   }
 
   private isChinese(): boolean {
-    return getLanguage().startsWith("zh");
+    // Use the document locale so Obsidian 1.5.0+ does not require a newer API.
+    const language = document.documentElement?.lang || navigator.language || "en";
+    return language.toLowerCase().startsWith("zh");
   }
 
   private getReadingRoot(view: MarkdownView): HTMLElement | null {
@@ -455,8 +457,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
   private showReadingActions(): void {
     if (this.readingActions || !this.cachedReadingSelection) return;
     const doc = this.cachedReadingSelection.block.ownerDocument;
-    const actions = doc.createElement("div");
-    actions.className = "deepl-reading-actions";
+    const actions = doc.body.createDiv({ cls: "deepl-reading-actions" });
     actions.setAttribute("role", "toolbar");
     actions.setAttribute("aria-label", this.isChinese() ? "翻译" : "Translate");
     for (const [scope, label] of [
@@ -464,9 +465,8 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
       ["sentenceText", this.isChinese() ? "翻译整句" : "Sentence"],
       ["paragraphText", this.isChinese() ? "翻译整段" : "Paragraph"],
     ] as const) {
-      const button = doc.createElement("button");
+      const button = actions.createEl("button", { text: label });
       button.type = "button";
-      button.textContent = label;
       button.addEventListener("pointerdown", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -479,9 +479,7 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
           this.hideReadingActions();
         }
       });
-      actions.append(button);
     }
-    doc.body.append(actions);
     this.readingActions = actions;
   }
 
@@ -572,7 +570,11 @@ export default class DeepLTranslateSelectionPlugin extends Plugin {
   // ───────────────────────── Settings helpers ───────────────────
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const storedData: unknown = await this.loadData();
+    this.settings = {
+      ...DEFAULT_SETTINGS,
+      ...(storedData !== null && typeof storedData === "object" && !Array.isArray(storedData) ? storedData : {}),
+    };
   }
 
   async saveSettings(): Promise<void> {
