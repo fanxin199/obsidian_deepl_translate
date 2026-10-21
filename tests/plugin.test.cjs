@@ -75,7 +75,7 @@ async function loadPlugin(editor = makeEditor(), settings = {}, options = {}) {
     open() { h.modal = this; this.onOpen(); }
     close() { this.closed = true; this.onClose?.(); }
   }
-  h.navigator = { clipboard: { async writeText(text) { h.clipboard.push(text); } } };
+  h.navigator = { language: h.language, clipboard: { async writeText(text) { h.clipboard.push(text); } } };
   let timerId = 0;
   const moduleObject = { exports: {} };
   vm.runInNewContext(bundle, {
