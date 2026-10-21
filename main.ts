@@ -103,7 +103,7 @@ const DEFAULT_TRANSLATION_SYSTEM_PROMPT = `You are a professional, native-speaki
 6. If the source text is a single paragraph, output the translation directly. If it contains multiple paragraphs, maintain the same paragraph separations.`;
 
 const DEBUG = false;
-const BUILD_ID = "v1.3.1";
+const BUILD_ID = "v1.3.2";
 
 function debugLog(...args: unknown[]): void {
   if (DEBUG) {
@@ -1167,7 +1167,7 @@ class DeepLTranslateSettingTab extends PluginSettingTab {
 
   private toggleProviderSections(): void {
     const isDeepL = this.plugin.settings.translationProvider === "deepl";
-    this.deeplSection.style.display = isDeepL ? "block" : "none";
-    this.deepseekSection.style.display = isDeepL ? "none" : "block";
+    this.deeplSection.toggleClass("is-hidden", !isDeepL);
+    this.deepseekSection.toggleClass("is-hidden", isDeepL);
   }
 }
